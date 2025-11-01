@@ -10,6 +10,7 @@ class Piece():
         self.y = y
         self.color = color
         self.name = name
+        self.hasmoved = False
    
 
 class Chessboard:
@@ -39,18 +40,17 @@ class Chessboard:
                     #Check if any allied piece is on that location:
                     if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:
                         continue
-                    # Special check for king : check if suicide
-                    if depth==0:
-                        fake_board = deepcopy(self)
-                        fake_board.move(start_location, end_location)
-
-                        opponent_moves = fake_board.get_all_legal_moves(1-player_color, depth=1)
-                        if np.any(np.logical_and(end_location[0]==opponent_moves[:,1,0], end_location[1]==opponent_moves[:,1,1])): 
-                            print("forbid", end_location)
-                            continue # If the opponent can move a piece to the future location of the king, forbid the move
 
                     moves.append([start_location, end_location])
-            #TODO add rock
+            
+            #Castling
+            if not piece.hasmoved:
+                #Kingside
+                if not self.board[7, piece.color * 7].hasmoved:
+                    pass
+                #Queenside
+                if not self.board[0, piece.color * 7].hasmoved:
+                    pass
 
         if piece.name=="knight":
             end_locations = np.array([[1, 2], [1, -2], [2, 1], [2,-1], [-2, 1], [-2, -1], [-1, 2], [-1, -2]]) + start_location
@@ -64,9 +64,13 @@ class Chessboard:
         if piece.name=="pawn":
             end_locations = []
             color_multiplier = (2*(1-player_color)-1)
-            end_locations.append(start_location + np.array([0, color_multiplier])) # Straight ahead
-            if start_location[1] == player_color * (self.height-1) + color_multiplier: # Pawns on the starting row can move two squares ahead
-                end_locations.append(start_location + np.array([0, 2*color_multiplier]))
+            one_ahead = start_location + np.array([0, color_multiplier])
+            two_ahead = start_location + np.array([0, 2*color_multiplier])
+            if one_ahead[1]>=0 and one_ahead[1]<=self.height and self.board[one_ahead[0], one_ahead[1]] is None:
+                moves.append([start_location, one_ahead])
+                if start_location[1] == player_color * (self.height-1) + color_multiplier and two_ahead[1]>=0 and two_ahead[1]<=self.height and self.board[two_ahead[0], two_ahead[1]] is None:
+                    moves.append([start_location, two_ahead])
+
             #diagonal kills
             for kill_location in start_location + np.array([[1, color_multiplier], [-1, color_multiplier]]):
                 try: 
@@ -74,15 +78,6 @@ class Chessboard:
                         moves.append([start_location, kill_location])
                 except Exception: pass # If the pawn is on the edge of the board and thus will trigger out of bounds error
             # Fuck en-passant, all my homies hate en-passant
-
-            for end_location in end_locations:
-                if np.any(end_location < 0) or end_location[0]>= self.width or end_location[1]>=self.height:continue #Check if location is on board
-                if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:continue #Check if any allied piece is on that location:
-                moves.append([start_location, end_location])
-
-            if end_location[1] == player_color * (self.height-1): # Promotion
-                # TODO handle promotion TODO do it in move() function
-                pass
         
         if piece.name in ["jester", "bishop"]:
             for x_offset in [-1, 1]:
@@ -141,17 +136,40 @@ class Chessboard:
             moves.extend(self.get_piece_legal_moves(piece, depth=depth))
         return np.array(moves)
     
-    def move(self, start, end):
+    def move(self, start, end, depth:int=0):
+        """Check if a move is legat and if so, commits the move on the board.
+        Args:
+            start: the coordinates of the moving piece
+            end: the coordinated to move the piece to
+        Returns 1 if move is illegal and hasn't been commited, 0 otherwise
+        """
         #Check if move is legal
         selected_piece = self.board[start[0], start[1]]
-        if selected_piece is None : return
+        if selected_piece is None : return 1
         legal_moves = self.get_piece_legal_moves(selected_piece, depth=1)[:,1,:]
-        if not np.any(np.logical_and(end[0]==legal_moves[:,0], end[1]==legal_moves[:,1])): return
+        if not np.any(np.logical_and(end[0]==legal_moves[:,0], end[1]==legal_moves[:,1])): return 1
 
+        # Check if move exposes king
+        if not depth:
+            fakeboard = deepcopy(self)
+            fakeboard.move(start,end, depth = 1)
+            opponent_moves = fakeboard.get_all_legal_moves(1-selected_piece.color, depth=1)
+            for opponent_end_position in opponent_moves[:, 1, :]:
+                attacked_piece = self.board[opponent_end_position[0], opponent_end_position[1]]
+                if attacked_piece is None: continue
+                if attacked_piece.name=="king" and attacked_piece.color == selected_piece.color: 
+                    print("Suicide move, illegal")
+                    return 1# Can't play move since it leads to checkmate
+
+        # Pawn promotion
         self.board[end[0], end[1]] = selected_piece
         self.board[start[0], start[1]] = None
         selected_piece.x = end[0]
         selected_piece.y = end[1]
+        if selected_piece.name == "pawn" and selected_piece.color*(7-selected_piece.y) + (1-selected_piece.color)*selected_piece.y == 7:
+            selected_piece.name="queen"
+        selected_piece.hasmoved = True
+        return 0
 
     
 def create_classic_board():
@@ -178,3 +196,7 @@ def create_classic_board():
 
 
 
+#TODO LIST
+# checkmate handler
+# king suicide on every move ?
+# Castle
