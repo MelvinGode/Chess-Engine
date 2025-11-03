@@ -231,3 +231,4 @@ def create_fucked_up_board():
 # check handler
     # WIP
 # Find a better way to detect suicide checks
+# Reset button
