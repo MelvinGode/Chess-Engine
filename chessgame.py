@@ -2,7 +2,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from copy import deepcopy
 
-
+letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
 
 class Piece():
     def __init__(self, x: int, y: int, name: str, color: int):
@@ -11,6 +11,9 @@ class Piece():
         self.color = color
         self.name = name
         self.hasmoved = False
+
+    def __str__(self):
+        return f'{"white" if self.color else "black"} {self.name} at position {letters[self.x]}{8-self.y}'
    
 
 class Chessboard:
@@ -46,11 +49,13 @@ class Chessboard:
             #Castling
             if not piece.hasmoved:
                 #Kingside
-                if not self.board[7, piece.color * 7].hasmoved:
-                    pass
+                if self.board[7, piece.color * 7] is not None and not self.board[7, piece.color * 7].hasmoved:
+                    if np.all(self.board[[5,6], piece.color * 7] == None):
+                        moves.append([start_location, [start_location[0]+2, start_location[1]]])
                 #Queenside
-                if not self.board[0, piece.color * 7].hasmoved:
-                    pass
+                if self.board[0, piece.color * 7] is not None and not self.board[0, piece.color * 7].hasmoved:
+                    if np.all(self.board[[1,2,3], piece.color * 7] == None):
+                        moves.append([start_location, [start_location[0]-2, start_location[1]]])
 
         if piece.name=="knight":
             end_locations = np.array([[1, 2], [1, -2], [2, 1], [2,-1], [-2, 1], [-2, -1], [-1, 2], [-1, -2]]) + start_location
@@ -132,7 +137,7 @@ class Chessboard:
     def get_all_legal_moves(self, player_color: int, depth:int=0):
         moves = [] # Array with dims nb_legal_moves*2*2 for start-finish coords and x-y
         for piece in self.board.ravel():
-            if piece is None or piece.color == player_color : continue
+            if piece is None or piece.color != player_color : continue
             moves.extend(self.get_piece_legal_moves(piece, depth=depth))
         return np.array(moves)
     
@@ -141,7 +146,7 @@ class Chessboard:
         Args:
             start: the coordinates of the moving piece
             end: the coordinated to move the piece to
-        Returns 1 if move is illegal and hasn't been commited, 0 otherwise
+        Returns 1 if move is purely illegal and hasn't been commited, 2 if a move is suicide and hasn't been comitted, 0 otherwise
         """
         #Check if move is legal
         selected_piece = self.board[start[0], start[1]]
@@ -155,17 +160,29 @@ class Chessboard:
             fakeboard.move(start,end, depth = 1)
             opponent_moves = fakeboard.get_all_legal_moves(1-selected_piece.color, depth=1)
             for opponent_end_position in opponent_moves[:, 1, :]:
-                attacked_piece = self.board[opponent_end_position[0], opponent_end_position[1]]
+                attacked_piece = fakeboard.board[opponent_end_position[0], opponent_end_position[1]]
                 if attacked_piece is None: continue
                 if attacked_piece.name=="king" and attacked_piece.color == selected_piece.color: 
-                    print("Suicide move, illegal")
-                    return 1# Can't play move since it leads to checkmate
+                    return 2# Can't play move since it leads to checkmate
+                
+        #Castle check
+        if selected_piece.name=="king" and abs(end[0] -start[0])>1:
+            new_rook_x = start[0] + 2*(end[0]>start[0])-1
+            castling_rook = self.board[(end[0]>start[0])*7, start[1]]
+            self.board[castling_rook.x, start[1]] = None
+            castling_rook.x = new_rook_x
+            selected_piece.x = end[0]
+            self.board[end[0], end[1]] = selected_piece
+            self.board[new_rook_x, start[1]] = castling_rook
+            self.board[start[0], end[0]] = None
+            return 0            
 
-        # Pawn promotion
         self.board[end[0], end[1]] = selected_piece
         self.board[start[0], start[1]] = None
         selected_piece.x = end[0]
         selected_piece.y = end[1]
+
+        # Pawn promotion
         if selected_piece.name == "pawn" and selected_piece.color*(7-selected_piece.y) + (1-selected_piece.color)*selected_piece.y == 7:
             selected_piece.name="queen"
         selected_piece.hasmoved = True
@@ -194,9 +211,23 @@ def create_classic_board():
     board = Chessboard(8, 8, pieces)
     return board
 
+def create_fucked_up_board():
+    pieces = []
+    for i, name in enumerate(["rook", "knight", "bishop"]):
+        pw = Piece(x=i, y=7, name=name, color=1)
+        pw2 = Piece(x=7-i, y=7, name=name, color=1)
+        pieces.extend([pw, pw2])
+    
+    kingw = Piece(x=4, y=7, name="king", color=1)
+    kingb = Piece(x=4, y=0, name="king", color=0)
+    queenw = Piece(x=3, y=7, name="queen", color=1)
+    pieces.extend([kingw, queenw, kingb])
+    
+    board = Chessboard(8, 8, pieces)
+    return board
 
 
 #TODO LIST
-# checkmate handler
-# king suicide on every move ?
-# Castle
+# check handler
+    # WIP
+# Find a better way to detect suicide checks
