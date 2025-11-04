@@ -4,139 +4,150 @@ import chessgame
 import numpy as np
 from copy import deepcopy
 from pygame import mixer
+import time
 
-letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+capital_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+letters = [letter.lower() for letter in capital_letters]
 pygame.init()
 
 WIDTH, HEIGHT = 1000, 800
-
-class Game:
-    def __init__(self):
-        self.board = chessgame.create_classic_board()
-        self.check = [False, False]
-        self.gameover = False
-
-
-
-# Grid
 corner_x = 50
 corner_y = 50
 margin = np.array([corner_x, corner_y])
 square_size = 70
-window = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption('Chess Engine')
-def draw_grid():
-    for i in range(0, 64, 1):
-        y = (i//8) * square_size +corner_y
-        x = (i%8) * square_size +corner_x
-        isgrey = (i%2)
-        if (i//8)%2 : isgrey = 1-isgrey
-        color =  (50,50,50) if isgrey else (255, 255, 255)
-        pygame.draw.rect(window, color, [x, y, square_size, square_size], 0)
-    pygame.draw.rect(window, (255, 255, 255), [corner_x, corner_y, square_size*8, square_size*8], 1)
-
-
-# Cell texts
-pygame.font.get_init()
-font = pygame.font.SysFont('freesanbold.ttf', 50)
-smallfont = pygame.font.SysFont('freesanbold.ttf', 30)
-def dispay_coords():
-    texts = []
-    coords = []
-    for i, letter in zip(range(8), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']):
-        texts.append(font.render(letter, True, (255, 255, 255)))
-        coords.append([corner_x + i*square_size + 35,  corner_y + square_size*8 + 35])
-
-        texts.append(font.render(str(i+1), True, (255, 255, 255)))
-        coords.append([corner_x //2, corner_y + (7-i)*square_size + 35])
-
-    for text, coord in zip(texts, coords):
-        textrect = text.get_rect()
-        textrect.center = (coord[0], coord[1])
-        window.blit(text, textrect)
-
-#Pieces display
-board = chessgame.create_classic_board()
-os.chdir(os.path.dirname(os.path.realpath(__file__)))
-piece_images = {}
-for img_name in os.listdir("Assets/Pieces/"):
-    piece_images[img_name[:-4]] = pygame.transform.scale_by(pygame.image.load(f"Assets/Pieces/{img_name}"), 1/2)
-def display_pieces(board : chessgame.Chessboard):
-    for piece in board.board.ravel():
-        if piece is None: continue
-        color = "white" if piece.color else 'black'
-        sprite = piece_images[color+'-'+piece.name]
-        coords = np.array([piece.x, piece.y])*square_size + square_size//2 + margin
-        rect = sprite.get_rect()
-        rect.center = (coords[0], coords[1])
-        window.blit(sprite, rect)
-
-#Sound
-mixer.init()
-mixer.Channel(1).set_volume(0.5)
-
-def display_board(board):
-    draw_grid()
-    display_pieces(board)
-    dispay_coords()
-    reset_button.show()
-
-class Button:
-    def __init__(self, x:int, y:int, width:int, height:int, text:str = '', color = (255, 255, 255), margin:float = 0.2):
-        self.coords=np.array([x,y])
-        self.width = width
-        self.height = height
-        self.text = text
-        self.color = color
-        self.size = np.array([width, height])
-        self.margin_size = self.size * margin
-
-        self.text = smallfont.render(self.text, True, (255, 255, 255))
-        self.textrect = self.text.get_rect()
-        self.textrect.center = self.coords + self.size/2
-
-    
-    def show(self):
-        pygame.draw.rect(window, self.color, [self.coords[0], self.coords[1], self.width, self.height], 0)
-        pygame.draw.rect(window, np.array(self.color) /2, [self.coords[0] + self.margin_size[0], self.coords[1]  + self.margin_size[1], self.width  -2* self.margin_size[0], self.height  -2* self.margin_size[1]], 0)
-        window.blit(self.text, self.textrect)
 
 reset_button_coords = margin + np.array([square_size * 8, 30]) + np.array([100, 0])
 reset_button_size = np.array([170, 60])
-reset_button = Button(reset_button_coords[0], reset_button_coords[1], reset_button_size[0], reset_button_size[1], text="New Game", color=(150, 50, 50), margin = .1)
 
-def play_human_human_game():
-    board = chessgame.create_classic_board()
-    nb_pieces = np.sum(board.board != None)
-    playing_color = 1
-    running=True
-    selected_piece = None
-    check = [False, False]
 
-    display_board(board)
-    whoseturnisit = font.render(f"{'White' if playing_color else 'Black'}\'s move", True, (255,255,255))
-    turn_rect = whoseturnisit.get_rect()
-    turn_rect.center = ((board.width * square_size)//2 + corner_x, board.height* square_size + corner_y + 100)
-    window.blit(whoseturnisit, turn_rect)
-    pygame.display.update()
+class Game:
+    def __init__(self):
+        self.board = chessgame.create_classic_board()
+        self.nb_pieces = np.sum(self.board.board != None)
+        self.check = [False, False]
+        self.gameover = False
+        self.PGN = ''
+        self.start_time = time.time()
 
-    gameover = False
-    while running:
-        while not gameover:
+        os.chdir(os.path.dirname(os.path.realpath(__file__)))
+
+    def _create_window(self):
+        #window
+        self.window = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption('Chess Engine')
+        #text
+        pygame.font.get_init()
+        self.font = pygame.font.SysFont('freesanbold.ttf', 50)
+        self.smallfont = pygame.font.SysFont('freesan.ttf', 30)
+        #button
+        self.reset_button = Button(reset_button_coords[0], reset_button_coords[1], reset_button_size[0], reset_button_size[1], game=self, text="New Game", color=(150, 150, 150), margin = .1)
+        #images
+        self.piece_images = {}
+        for img_name in os.listdir("Assets/Pieces/"):
+            self.piece_images[img_name[:-4]] = pygame.transform.scale_by(pygame.image.load(f"Assets/Pieces/{img_name}"), 1/2)
+        #sound
+        mixer.init()
+        mixer.Channel(1).set_volume(0.5)
+
+    def _draw_grid(self):
+        for i in range(0, 64, 1):
+            y = (i//8) * square_size +corner_y
+            x = (i%8) * square_size +corner_x
+            isgrey = (i%2)
+            if (i//8)%2 : isgrey = 1-isgrey
+            color =  (50,50,50) if isgrey else (255, 255, 255)
+            pygame.draw.rect(self.window, color, [x, y, square_size, square_size], 0)
+        pygame.draw.rect(self.window, (255, 255, 255), [corner_x, corner_y, square_size*8, square_size*8], 1)
+
+    def _dispay_coords(self):
+        texts = []
+        coords = []
+        for i, letter in zip(range(8), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']):
+            texts.append(self.font.render(letter, True, (255, 255, 255)))
+            coords.append([corner_x + i*square_size + 35,  corner_y + square_size*8 + 35])
+
+            texts.append(self.font.render(str(i+1), True, (255, 255, 255)))
+            coords.append([corner_x //2, corner_y + (7-i)*square_size + 35])
+
+        for text, coord in zip(texts, coords):
+            textrect = text.get_rect()
+            textrect.center = (coord[0], coord[1])
+            self.window.blit(text, textrect)
+
+    def _display_pieces(self):
+        for piece in self.board.board.ravel():
+            if piece is None: continue
+            color = "white" if piece.color else 'black'
+            sprite = self.piece_images[color+'-'+piece.name]
+            coords = np.array([piece.x, piece.y])*square_size + square_size//2 + margin
+            rect = sprite.get_rect()
+            rect.center = (coords[0], coords[1])
+            self.window.blit(sprite, rect)
+
+    def _display_board(self): # TODO change to board.show(), need to modify board class and pass the right arguments initialized in create_window()
+        self._draw_grid()
+        self._display_pieces()
+        self._dispay_coords()
+        self.reset_button.show()
+
+    def _save_PGN(self):
+        with open(f"PGN/{self.start_time}.pgn", "w", encoding="utf-8") as f:
+            f.write(self.PGN)
+    
+    def play_human_human_game(self):
+        self._create_window()
+
+        playing_color = 1
+        running=True
+        selected_piece = None
+        turn_counter = 0
+
+        self._display_board()
+        whoseturnisit = self.font.render(f"{'White' if playing_color else 'Black'}\'s move", True, (255,255,255))
+        turn_rect = whoseturnisit.get_rect()
+        turn_rect.center = ((self.board.width * square_size)//2 + corner_x, self.board.height* square_size + corner_y + 100)
+        self.window.blit(whoseturnisit, turn_rect)
+        pygame.display.update()
+
+        gameover = False
+        while running:
             for event in pygame.event.get():
-                if gameover: 
-                    break
+                if gameover:
+                    self.PGN = self.PGN[:-1] + '#' + f'{0 if playing_color else 1}-{1 if playing_color else 0}'
+                    self.window.fill(0)
+                    self._display_board()
+                    winnertext = self.font.render(f"Checkmate, {'White' if 1-playing_color else 'Black'} wins", True, (255,255,255))
+                    rect = winnertext.get_rect()
+                    rect.center = ((self.board.width * square_size)//2 + corner_x, self.board.height* square_size + corner_y + 100)
+                    self.window.blit(winnertext, rect)
+                    pygame.display.update()
+
+                    if event.type == pygame.QUIT:
+                        running=False
+                        break
+
+                    if event.type==pygame.MOUSEBUTTONDOWN:
+                        mouse_coords = np.array(pygame.mouse.get_pos())
+                        if np.all(mouse_coords >= self.reset_button.coords) and np.all(mouse_coords <= self.reset_button.coords + self.reset_button.size): # If we click on reset button
+                            # Reset the game
+                            self.board = chessgame.create_classic_board()
+                            self.nb_pieces = np.sum(self.board.board != None)
+                            selected_piece = None
+                            playing_color = 1
+                            gameover = False
+                            mixer.Channel(1).play(pygame.mixer.Sound("Assets/Sounds/reset.mp3"))
+
+                    continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     mouse_coords = np.array(pygame.mouse.get_pos())
-                    if np.all(mouse_coords >= reset_button.coords) and np.all(mouse_coords <= reset_button.coords + reset_button.size): # If we click on reset button
+                    if np.all(mouse_coords >= self.reset_button.coords) and np.all(mouse_coords <= self.reset_button.coords + self.reset_button.size): # If we click on reset button
                         # Reset the game
-                        board = chessgame.create_classic_board()
-                        nb_pieces = np.sum(board.board != None)
+                        self.board = chessgame.create_classic_board()
+                        self.nb_pieces = np.sum(self.board.board != None)
                         selected_piece = None
                         playing_color = 1
                         mixer.Channel(1).play(pygame.mixer.Sound("Assets/Sounds/reset.mp3"))
-
 
                     board_coords = (mouse_coords - margin) // square_size
 
@@ -144,39 +155,68 @@ def play_human_human_game():
                     if selected_piece is not None:
                         try: 
                             previous_coords = [selected_piece.x, selected_piece.y]
-                            illegal_flag = board.move([selected_piece.x, selected_piece.y], board_coords)
-                            if illegal_flag: 
+                            previous_board = deepcopy(self.board)
+                            illegal_flag = self.board.move([selected_piece.x, selected_piece.y], board_coords)
+                            if illegal_flag:
                                 selected_piece = None
-                                display_board(board)
+                                self._display_board()
                                 if illegal_flag==2: print("Suicide move, illegal")
                                 continue
                         except Exception as e:
                             print(f"Error {e}")
                             selected_piece = None
-                            display_board(board)
+                            self._display_board()
                             continue
                         
                         print(f'{str(selected_piece).replace("at", "to")} from {letters[previous_coords[0]]}{8-previous_coords[1]}')
 
-                        if np.sum(board.board != None) < nb_pieces:
-                            nb_pieces -= 1
-                            mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/capture.mp3"))
+                        #PGN update
+                        if playing_color:
+                            turn_counter +=1
+                            self.PGN += f'{turn_counter}.'
+                        #ambiguity check
+                        if selected_piece.name=="king" and abs(board_coords[0] - previous_coords[0])>1.5 : # Get castling out of the way as it is the only scenario where a move is not reversible
+                            if board_coords[0] > previous_coords[0]:self.PGN += 'O-O'
+                            else : self.PGN +='O-O-O'
                         else:
-                            mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
-                        #This is where we change turns 
+                            self.PGN += selected_piece.PGN_letter
+                            ambiguity = False
+                            file_ambiguity, rank_ambiguity = False, False
+                            for piece in previous_board.board.ravel():
+                                if piece is None or piece.name!=selected_piece.name or piece.color!=selected_piece.color or (piece.x==previous_coords[0] and piece.y==previous_coords[1]): continue
+                                if np.any( np.all(previous_board.get_piece_legal_moves(piece)[:,1,:] == np.array(board_coords), axis=1) ):
+                                    ambiguity = True
+                                    if piece.x == selected_piece.x: file_ambiguity = True
+                                    elif piece.y == selected_piece.y: rank_ambiguity = True
+                            if ambiguity:
+                                if not file_ambiguity:
+                                    self.PGN += letters[previous_coords[0]]
+                                elif not rank_ambiguity:
+                                    self.PGN += str(8-previous_coords[1])
+                                else:
+                                    self.PGN += f"{letters[previous_coords[0]]}{8-previous_coords[1]}"
+                        if np.sum(self.board.board != None) < self.nb_pieces: # If there has been a capture
+                            self.nb_pieces -= 1
+                            mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/capture.mp3"))
+                            self.PGN += 'x'
+                        else: mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
+                        self.PGN += f"{letters[board_coords[0]]}{8-board_coords[1]}"
+                        self._save_PGN()
+
+                        #Turn change
                         playing_color = 1-playing_color
                         selected_piece = None
 
-                        window.fill(0)
-                        whoseturnisit = font.render(f"{'White' if playing_color else 'Black'}\'s move", True, (255,255,255))
-                        window.blit(whoseturnisit, turn_rect)
-                        display_board(board)
+                        self.window.fill(0)
+                        whoseturnisit = self.font.render(f"{'White' if playing_color else 'Black'}\'s move", True, (255,255,255))
+                        self.window.blit(whoseturnisit, turn_rect)
+                        self._display_board()
 
                         #mate checker
-                        next_moves = board.get_all_legal_moves(playing_color)
+                        next_moves = self.board.get_all_legal_moves(playing_color)
                         gameover = True
                         for move in next_moves: # Check if next player has at least one legal move
-                            fake_board = deepcopy(board)
+                            fake_board = deepcopy(self.board)
                             illegality_flag = fake_board.move(move[0], move[1])
                             if not illegality_flag:
                                 gameover = False
@@ -192,15 +232,15 @@ def play_human_human_game():
                         #         white_check = True
                     
                     else:# If we just picked up a piece
-                        display_board(board)
+                        self._display_board()
                         #convert x y coords in board coords
-                        try: selected_piece = board.board[board_coords[0], board_coords[1]]
+                        try: selected_piece = self.board.board[board_coords[0], board_coords[1]]
                         except Exception: continue
                         if selected_piece is None or selected_piece.color != playing_color: 
                             selected_piece = None
                             continue
                         # print(f"Selected {'white' if selected_piece.color else 'black'} {selected_piece.name}")
-                        moves = board.get_piece_legal_moves(selected_piece)
+                        moves = self.board.get_piece_legal_moves(selected_piece)
                         end_coords = moves[:, 1, :]
                         if len(end_coords)==0:
                             selected_piece = None
@@ -208,7 +248,7 @@ def play_human_human_game():
                         for board_coords in end_coords:
                             xy_coords = board_coords * square_size + margin
                             highlight_color = (255, 100, 100)
-                            pygame.draw.rect(window, highlight_color, [xy_coords[0], xy_coords[1], square_size, square_size], 2)
+                            pygame.draw.rect(self.window, highlight_color, [xy_coords[0], xy_coords[1], square_size, square_size], 2)
                             # pygame.draw.rect(window, (255, 255, 255), [xy_coords[0], xy_coords[1], square_size, square_size], 3)
 
                 if event.type == pygame.QUIT:
@@ -216,58 +256,30 @@ def play_human_human_game():
                     gameover = True
 
                 pygame.display.update()
-        
-        for event in pygame.event.get():
-            if gameover:
-                    window.fill(0)
-                    display_board(board)
-                    winnertext = font.render(f"Checkmate, {'White' if 1-playing_color else 'Black'} wins", True, (255,255,255))
-                    rect = winnertext.get_rect()
-                    rect.center = ((board.width * square_size)//2 + corner_x, board.height* square_size + corner_y + 100)
-                    window.blit(winnertext, rect)
-                    pygame.display.update()
-            if event.type == pygame.QUIT:
-                running=False
 
-        
-play_human_human_game()
-
-# selected_piece = None
-# while running:
-#     for event in pygame.event.get():
-#         if event.type == pygame.MOUSEBUTTONDOWN:
-#             board_coords = (np.array(pygame.mouse.get_pos()) - margin) // square_size
-
-#             # If we are already holding a piece in hand
-#             if selected_piece is not None:
-#                 try: board.move([selected_piece.x, selected_piece.y], board_coords)
-#                 except Exception as e:
-#                     print(f"Error {e}")
-#                     selected_piece = None
-#                     continue
-#                 selected_piece = None
-#                 display_board(board)
-#                 continue
             
-#             # If we just picked up a piece
-#             display_board(board)
-#             #convert x y coords in board coords
-#             try: selected_piece = board.board[board_coords[0], board_coords[1]]
-#             except Exception: continue
-#             if selected_piece is None : continue
-#             print(f"Selected {'white' if selected_piece.color else 'black'} {selected_piece.name}")
-#             moves = board.get_piece_legal_moves(selected_piece)
-#             end_coords = moves[:, 1, :]
-#             if len(end_coords)==0:
-#                 selected_piece = None
-#             # color legal squares
-#             for board_coords in end_coords:
-#                 xy_coords = board_coords * square_size + margin
-#                 highlight_color = (200, 100, 100)
-#                 pygame.draw.rect(window, highlight_color, [xy_coords[0], xy_coords[1], square_size, square_size], 0)
-#                 pygame.draw.rect(window, (255, 255, 255), [xy_coords[0], xy_coords[1], square_size, square_size], 3)
 
-#         if event.type == pygame.QUIT:
-#             running=False
+class Button:
+    def __init__(self, x:int, y:int, width:int, height:int, game:Game, text:str = '', color = (255, 255, 255), margin:float = 0.2):
+        self.coords=np.array([x,y])
+        self.width = width
+        self.height = height
+        self.text = text
+        self.color = color
+        self.size = np.array([width, height])
+        self.margin_size = self.size * margin
+        self.game = game
+
+        self.text = self.game.smallfont.render(self.text, True, (255, 255, 255))
+        self.textrect = self.text.get_rect()
+        self.textrect.center = self.coords + self.size/2
+
     
-#     pygame.display.update()
+    def show(self):
+        pygame.draw.rect(self.game.window, self.color, [self.coords[0], self.coords[1], self.width, self.height], 0)
+        pygame.draw.rect(self.game.window, np.array(self.color) /1.5, [self.coords[0] + self.margin_size[0], self.coords[1]  + self.margin_size[1], self.width  -2* self.margin_size[0], self.height  -2* self.margin_size[1]], 0)
+        self.game.window.blit(self.text, self.textrect)
+
+
+game = Game()
+game.play_human_human_game()

@@ -8,9 +8,17 @@ class Piece():
     def __init__(self, x: int, y: int, name: str, color: int):
         self.x = x
         self.y = y
+        self.coords = np.array([x,y])
         self.color = color
         self.name = name
         self.hasmoved = False
+        if name =="knight" : self.PGN_letter = "N"
+        elif name == "queen": self.PGN_letter = "Q"
+        elif name == "rook": self.PGN_letter = "R"
+        elif name == "bishop": self.PGN_letter = "B"
+        elif name == "pawn": self.PGN_letter = ""
+        elif name == "king": self.PGN_letter = "K"
+        else : raise ValueError("Piece name not accepted. Please choose one of 'pawn', 'rook', 'knigh', 'bishop', 'queen', 'king'.")
 
     def __str__(self):
         return f'{"white" if self.color else "black"} {self.name} at position {letters[self.x]}{8-self.y}'
@@ -174,18 +182,21 @@ class Chessboard:
             selected_piece.x = end[0]
             self.board[end[0], end[1]] = selected_piece
             self.board[new_rook_x, start[1]] = castling_rook
-            self.board[start[0], end[0]] = None
-            return 0            
+            self.board[start[0], start[1]] = None
+            castling_rook.hasmoved = True
+            selected_piece.hasmoved = True
+            return 0 
 
         self.board[end[0], end[1]] = selected_piece
         self.board[start[0], start[1]] = None
         selected_piece.x = end[0]
         selected_piece.y = end[1]
+        selected_piece.hasmoved = True
 
         # Pawn promotion
         if selected_piece.name == "pawn" and selected_piece.color*(7-selected_piece.y) + (1-selected_piece.color)*selected_piece.y == 7:
             selected_piece.name="queen"
-        selected_piece.hasmoved = True
+            selected_piece.PGN_letter = 'Q'
         return 0
 
     
@@ -231,4 +242,6 @@ def create_fucked_up_board():
 # check handler
     # WIP
 # Find a better way to detect suicide checks
-# Reset button
+# Make a proper Game class
+# 
+# Rewind move
