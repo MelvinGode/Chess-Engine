@@ -35,10 +35,11 @@ class Chessboard:
         for piece in self.pieces:
             self.board[piece.x, piece.y] = piece
 
-    def get_piece_legal_moves(self, piece:Piece, depth:int=0):
+    def get_piece_legal_moves(self, piece:Piece, depth:int=0, collide_mode: bool = False):
         start_location = np.array([piece.x, piece.y])
         player_color = piece.color
         moves = [] # Array with dims nb_legal_moves*2*2 for start-finish coords and x-y
+        if collide_mode : collisions = []
         if piece.name=="king":
             for x_offset in [-1, 0, 1]:
                 for y_offset in [-1, 0, 1]:
@@ -50,6 +51,7 @@ class Chessboard:
                         continue
                     #Check if any allied piece is on that location:
                     if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:
+                        if collide_mode and self.board[end_location[0], end_location[1]].PGN_letter == piece.PGN_letter : collisions.append(end_location)
                         continue
 
                     moves.append([start_location, end_location])
@@ -71,24 +73,32 @@ class Chessboard:
                 #Check if location is on board
                 if np.any(end_location < 0) or end_location[0]>= self.width or end_location[1]>=self.height:continue
                 #Check if any allied piece is on that location:
-                if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:continue
+                if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:
+                    if collide_mode and self.board[end_location[0], end_location[1]].PGN_letter == piece.PGN_letter : collisions.append(end_location)
+                    continue
                 moves.append([start_location, end_location])
 
         if piece.name=="pawn":
+            # TODO fix collide mode
             end_locations = []
             color_multiplier = (2*(1-player_color)-1)
             one_ahead = start_location + np.array([0, color_multiplier])
             two_ahead = start_location + np.array([0, 2*color_multiplier])
-            if one_ahead[1]>=0 and one_ahead[1]<=self.height and self.board[one_ahead[0], one_ahead[1]] is None:
-                moves.append([start_location, one_ahead])
-                if start_location[1] == player_color * (self.height-1) + color_multiplier and two_ahead[1]>=0 and two_ahead[1]<=self.height and self.board[two_ahead[0], two_ahead[1]] is None:
-                    moves.append([start_location, two_ahead])
+            if one_ahead[1]>=0 and one_ahead[1]<=self.height :
+                if self.board[one_ahead[0], one_ahead[1]] is None:
+                    moves.append([start_location, one_ahead])
+                    if start_location[1] + collide_mode * color_multiplier*2 == player_color * (self.height-1) + collide_mode * color_multiplier * (self.height-1) + color_multiplier * (2*(1-collide_mode)-1) and two_ahead[1]>=0 and two_ahead[1]<=self.height :
+                        if self.board[two_ahead[0], two_ahead[1]] is None :
+                            moves.append([start_location, two_ahead])
+                        elif collide_mode and self.board[two_ahead[0], two_ahead[1]].PGN_letter == piece.PGN_letter and self.board[two_ahead[0], two_ahead[1]].color != piece.color: collisions.append(two_ahead)
+                elif collide_mode and self.board[one_ahead[0], one_ahead[1]].PGN_letter == piece.PGN_letter and self.board[one_ahead[0], one_ahead[1]].color != piece.color: collisions.append(one_ahead)
 
             #diagonal kills
             for kill_location in start_location + np.array([[1, color_multiplier], [-1, color_multiplier]]):
                 try: 
                     if self.board[kill_location[0], kill_location[1]] is not None and self.board[kill_location[0], kill_location[1]].color != player_color:
                         moves.append([start_location, kill_location])
+                        collisions.append(end_location)
                 except Exception: pass # If the pawn is on the edge of the board and thus will trigger out of bounds error
             # Fuck en-passant, all my homies hate en-passant
         
@@ -100,7 +110,9 @@ class Chessboard:
                     while True:
                         end_location = previous_end_location + np.array([x_offset, y_offset])
                         if np.any(end_location < 0) or end_location[0]>= self.width or end_location[1]>=self.height:break #Check if location is on board
-                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:break #Check if any allied piece is on that location:
+                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color: #Check if any allied piece is on that location:
+                            if collide_mode and self.board[end_location[0], end_location[1]].PGN_letter == piece.PGN_letter : collisions.append(end_location)
+                            break
                         if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color != player_color: #Check if an enemy piece is on that location
                             moves.append([start_location, end_location])
                             break
@@ -115,7 +127,9 @@ class Chessboard:
                     while True:
                         end_location = previous_end_location + np.array([x_offset, y_offset])
                         if np.any(end_location < 0) or end_location[0]>= self.width or end_location[1]>=self.height:break #Check if location is on board
-                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:break #Check if any allied piece is on that location:
+                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color: #Check if any allied piece is on that location:
+                            if collide_mode and self.board[end_location[0], end_location[1]].PGN_letter == piece.PGN_letter : collisions.append(end_location)
+                            break
                         if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color != player_color: #Check if an enemy piece is on that location
                             moves.append([start_location, end_location])
                             break
@@ -130,14 +144,17 @@ class Chessboard:
                     while True:
                         end_location = previous_end_location + np.array([x_offset, y_offset])
                         if np.any(end_location < 0) or end_location[0]>= self.width or end_location[1]>=self.height:break #Check if location is on board
-                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color:break #Check if any allied piece is on that location:
+                        if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color == player_color: #Check if any allied piece is on that location:
+                            if collide_mode and self.board[end_location[0], end_location[1]].PGN_letter == piece.PGN_letter : collisions.append(end_location)
+                            break
                         if self.board[end_location[0], end_location[1]] is not None and self.board[end_location[0], end_location[1]].color != player_color: #Check if an enemy piece is on that location
                             moves.append([start_location, end_location])
                             break
                         moves.append([start_location, end_location])
                         previous_end_location = end_location
         
-        moves = np.array(moves)
+        if collide_mode : return np.array(collisions, dtype=int)
+        moves = np.array(moves, dtype = int)
         if len(moves) == 0 : return np.empty((0, 2, 2))
         return moves
 
