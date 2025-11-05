@@ -98,7 +98,7 @@ class Chessboard:
                 try: 
                     if self.board[kill_location[0], kill_location[1]] is not None and self.board[kill_location[0], kill_location[1]].color != player_color:
                         moves.append([start_location, kill_location])
-                        collisions.append(end_location)
+                        collisions.append(kill_location)
                 except Exception: pass # If the pawn is on the edge of the board and thus will trigger out of bounds error
             # Fuck en-passant, all my homies hate en-passant
         
