@@ -95,10 +95,11 @@ class Chessboard:
 
             #diagonal kills
             for kill_location in start_location + np.array([[1, color_multiplier], [-1, color_multiplier]]):
+                if np.any(kill_location < 0) or kill_location[0]>= self.width or kill_location[1]>=self.height:continue
                 try: 
                     if self.board[kill_location[0], kill_location[1]] is not None and self.board[kill_location[0], kill_location[1]].color != player_color:
                         moves.append([start_location, kill_location])
-                        collisions.append(kill_location)
+                        if self.board[piece.x, piece.y] is not None and self.board[start_location[0], start_location[1]].color == piece.color : collisions.append(kill_location)
                 except Exception: pass # If the pawn is on the edge of the board and thus will trigger out of bounds error
             # Fuck en-passant, all my homies hate en-passant
         
@@ -156,6 +157,10 @@ class Chessboard:
         if collide_mode : return np.array(collisions, dtype=int)
         moves = np.array(moves, dtype = int)
         if len(moves) == 0 : return np.empty((0, 2, 2))
+        if np.any(moves<0) or np.any(moves>=8):
+            print(piece)
+            print(moves)
+            raise ValueError("illegal move computed")
         return moves
 
                         

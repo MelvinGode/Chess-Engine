@@ -5,6 +5,7 @@ import numpy as np
 from copy import deepcopy
 from pygame import mixer
 import time
+import torch
 
 capital_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
 letters = [letter.lower() for letter in capital_letters]
@@ -40,14 +41,15 @@ class Game:
     def load_PGN(self, PGN_string:str):
         self.PGN = PGN_string
         self.board = chessgame.create_classic_board()
-        playing_side = 1
+        playing_side = 0
         current_turn = 0
         for item in PGN_string.split(" "):
             if not item : break
-            if item[1]==".":
-                current_turn = item[0]
+            dotloc = item.find(".")
+            if dotloc>0:
+                current_turn = int(item[:dotloc])
                 playing_side = 1-item.endswith('...')
-                item = item[2 + 2*(1-playing_side):]
+                item = item[dotloc + 1 + 2*(1-playing_side):]
             else:
                 playing_side = 1-playing_side
 
@@ -95,6 +97,7 @@ class Game:
             self.current_PGN_index = new_PGN_index
         else:
             self.current_PGN_index = (not forward)* space_index + forward* (self.current_PGN_index + space_index) +1
+        if not forward : self.gameover = False
 
         self.load_PGN(self.PGN[:self.current_PGN_index])
         self.PGN = PGN_temp
@@ -176,8 +179,9 @@ class Game:
 
         pygame.display.update()
 
-    def _save_PGN(self):
-        with open(f"PGN/{self.start_time}.pgn", "w", encoding="utf-8") as f:
+    def _save_PGN(self, filepath:str=''):
+        if filepath and not (filepath.endswith('/') or filepath.endswith('\\')): filepath = filepath+'/'
+        with open(f"PGN/{filepath}{self.start_time}.pgn", "w", encoding="utf-8") as f:
             f.write(self.PGN)
     
     def _reset_game(self):
@@ -191,7 +195,7 @@ class Game:
         self.selected_piece = None
         mixer.Channel(1).play(pygame.mixer.Sound("Assets/Sounds/reset.mp3"))
 
-    def _update_PGN(self, start, end):
+    def _update_PGN(self, start, end, filepath:str=''):
         self.PGN = self.PGN[:self.current_PGN_index]
         castled = False
         if 1 - self.playing_color:
@@ -221,7 +225,8 @@ class Game:
                     self.PGN += f"{letters[start[0]]}{8-start[1]}"
         if np.sum(self.board.board != None) < self.nb_pieces: self.PGN += 'x'# If there has been a capture
         if not castled: self.PGN += f"{letters[end[0]]}{8-end[1]} "
-        self._save_PGN()
+        if self.gameover and not self.PGN.endswith('#') : self.PGN[-1] = '#'
+        self._save_PGN(filepath)
         self.current_PGN_index = len(self.PGN)
     
     def play_human_human_game(self):
@@ -274,16 +279,6 @@ class Game:
                         
                         print(f'{str(self.selected_piece).replace("at", "to")} from {letters[previous_coords[0]]}{8-previous_coords[1]}')
 
-                        #PGN update
-                        self._update_PGN(previous_coords, board_coords)
-                        if np.sum(self.board.board != None) < self.nb_pieces: # If there has been a capture
-                            self.nb_pieces -= 1
-                            mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/capture.mp3"))
-                        else: mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
-
-                        #Turn change
-                        self.selected_piece = None
-
                         #mate checker
                         next_moves = self.board.get_all_legal_moves(self.playing_color)
                         self.gameover = True
@@ -293,6 +288,16 @@ class Game:
                             if not illegality_flag:
                                 self.gameover = False
                                 break
+
+                        #PGN update
+                        self._update_PGN(previous_coords, board_coords)
+                        if np.sum(self.board.board != None) < self.nb_pieces: # If there has been a capture
+                            self.nb_pieces -= 1
+                            mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/capture.mp3"))
+                        else: mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
+
+                        #Turn change
+                        self.selected_piece = None                        
 
                         #check checker
                         # if check[playing_color]: 
@@ -325,11 +330,79 @@ class Game:
 
                 if event.type == pygame.QUIT:
                     running=False
-                    gameover = True
 
                 pygame.display.update()
 
+    def play_ai_ai_game(self, high_actor, low_actor, critic, epsilon:float):
+        self.gameover = False
+        estimated_win_probs = []
+        piece_log_probs = []
+        end_log_probs = []
+
+        max_turns = 300
+        turn_count = 0
+        while not self.gameover and turn_count<max_turns:
+            #mate checker
+            next_moves = self.board.get_all_legal_moves(self.playing_color)
+            legal_moves = []
+            self.gameover = True
+            for move in next_moves: # Check if next player has at least one legal move
+                fake_board = deepcopy(self.board)
+                illegality_flag = fake_board.move(move[0], move[1])
+                if not illegality_flag:
+                    self.gameover = False
+                    legal_moves.append(move)
+            if self.gameover: break
+            legal_moves = np.array(legal_moves, dtype=int)
+            legal_moves = 8* legal_moves[:,:, 0] + legal_moves[:,:,1] #convert to 1D
+
+            estimated_win_probs.append(critic(self.board.board))
             
+            selected_start_probas = high_actor(self.board.board, legal_moves[:,0], self.playing_color)
+            explore =  np.random.random()< epsilon
+            if not explore: 
+                # print(selected_start_probas, '\n', selected_start_probas.shape)
+                selected_start = selected_start_probas.argmax().to("cpu")
+            else: selected_start = np.random.choice(np.unique(legal_moves[:,0]))
+            try:
+                selected_end_probas = low_actor(self.board.board, legal_moves[np.isclose(legal_moves[:,0], selected_start), 1], self.playing_color)
+                # assert len(legal_moves)>=2, 'One move'
+            except Exception as e:
+                print(f'legal moves: {legal_moves}')
+                print(f'Selected start: {selected_start}')
+                print(f'Explored: {explore}')
+                print(f"Error {e}")
+                raise ValueError("ahh")
+            if np.random.random()>= epsilon: 
+                # print(selected_end_probas)
+                selected_end = selected_end_probas.argmax().to("cpu")
+            else: selected_end = np.random.choice(np.unique(legal_moves[np.isclose(legal_moves[:,0], selected_start), 1]))
+
+            piece_log_probs.append(torch.log(selected_start_probas[selected_start]))
+            end_log_probs.append(torch.log(selected_end_probas[selected_end]))
+
+            start = np.array([selected_start//8, selected_start%8])
+            end = np.array([selected_end//8, selected_end%8])
+            self.previous_board = deepcopy(self.board)
+            self.selected_piece = self.board.board[start[0], start[1]]
+            # print(f'start : {start}, end : {end}')
+            if self.board.move(start, end):
+                print(f'Legal moves : {legal_moves}')
+                print(f'selected start: {selected_start}, selected end: {selected_end}. Mask: {legal_moves[legal_moves[:,0]==selected_start, 1]}')
+                raise ValueError(f"AI somehow played an illegal move: {start} to {end}. ")
+
+            #Turn change
+            self.playing_color = 1-self.playing_color
+
+            #PGN update
+            self._update_PGN(start, end, filepath="AI/")
+            self.nb_pieces = np.sum(self.board.board != None)
+
+            turn_count+=1
+
+        winner = 1-self.playing_color if turn_count<max_turns else 0.5
+        return torch.stack(estimated_win_probs), torch.stack(piece_log_probs), torch.stack(end_log_probs), winner
+
 
 class Button:
     def __init__(self, x:int, y:int, width:int, height:int, game:Game, function, args=None, text:str = '', color = (255, 255, 255), margin:float = 0.2):
@@ -360,11 +433,12 @@ class Button:
             self.game.selected_piece = None
 
 
-game = Game()
-with open("PGN/1762346465.2588606.pgn", 'r', encoding="utf-8") as f:
-    pgnstring = f.read()
+if __name__ == "__main__":
+    game = Game()
+    with open("PGN/AI/1762783942.0622911.pgn", 'r', encoding="utf-8") as f:
+        pgnstring = f.read()
 
-game.load_PGN(pgnstring)
-game.play_human_human_game()
+    game.load_PGN(pgnstring)
+    game.play_human_human_game()
 
 # TODO factorise game loop
