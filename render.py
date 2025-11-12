@@ -333,13 +333,12 @@ class Game:
 
                 pygame.display.update()
 
-    def play_ai_ai_game(self, high_actor, low_actor, critic, epsilon:float):
+    def play_ai_ai_game(self, high_actor, low_actor, epsilon:float, max_turns = 300):
         self.gameover = False
-        estimated_win_probs = []
+        game_states = []
         piece_log_probs = []
         end_log_probs = []
 
-        max_turns = 300
         turn_count = 0
         while not self.gameover and turn_count<max_turns:
             #mate checker
@@ -356,17 +355,16 @@ class Game:
             legal_moves = np.array(legal_moves, dtype=int)
             legal_moves = 8* legal_moves[:,:, 0] + legal_moves[:,:,1] #convert to 1D
 
-            estimated_win_probs.append(critic(self.board.board))
+            current_state = self.board.tensorboard.clone().to('cuda').unsqueeze(0)
+
+            game_states.append(current_state)
             
-            selected_start_probas = high_actor(self.board.board, legal_moves[:,0], self.playing_color)
+            selected_start_probas = high_actor(current_state, np.unique(legal_moves[:,0]), self.playing_color).squeeze()
             explore =  np.random.random()< epsilon
-            if not explore: 
-                # print(selected_start_probas, '\n', selected_start_probas.shape)
-                selected_start = selected_start_probas.argmax().to("cpu")
+            if not explore: selected_start = selected_start_probas.argmax().to("cpu")
             else: selected_start = np.random.choice(np.unique(legal_moves[:,0]))
             try:
-                selected_end_probas = low_actor(self.board.board, legal_moves[np.isclose(legal_moves[:,0], selected_start), 1], self.playing_color)
-                # assert len(legal_moves)>=2, 'One move'
+                selected_end_probas = low_actor(current_state, legal_moves[np.isclose(legal_moves[:,0], selected_start), 1], self.playing_color).squeeze()
             except Exception as e:
                 print(f'legal moves: {legal_moves}')
                 print(f'Selected start: {selected_start}')
@@ -374,7 +372,6 @@ class Game:
                 print(f"Error {e}")
                 raise ValueError("ahh")
             if np.random.random()>= epsilon: 
-                # print(selected_end_probas)
                 selected_end = selected_end_probas.argmax().to("cpu")
             else: selected_end = np.random.choice(np.unique(legal_moves[np.isclose(legal_moves[:,0], selected_start), 1]))
 
@@ -388,7 +385,8 @@ class Game:
             # print(f'start : {start}, end : {end}')
             if self.board.move(start, end):
                 print(f'Legal moves : {legal_moves}')
-                print(f'selected start: {selected_start}, selected end: {selected_end}. Mask: {legal_moves[legal_moves[:,0]==selected_start, 1]}')
+                print(f'Selected start: {selected_start}. Explored: {explore}')
+                print(f'selected start: {selected_start}, 1st Mask: {np.unique(legal_moves[:,0])}. Selected end: {selected_end}. 2nd Mask: {legal_moves[legal_moves[:,0]==selected_start, 1]}')
                 raise ValueError(f"AI somehow played an illegal move: {start} to {end}. ")
 
             #Turn change
@@ -400,8 +398,8 @@ class Game:
 
             turn_count+=1
 
-        winner = 1-self.playing_color if turn_count<max_turns else 0.5
-        return torch.stack(estimated_win_probs), torch.stack(piece_log_probs), torch.stack(end_log_probs), winner
+        winner = 2*(1-self.playing_color)-1 if turn_count<max_turns else 0
+        return torch.stack(game_states), torch.stack(piece_log_probs), torch.stack(end_log_probs), winner
 
 
 class Button:

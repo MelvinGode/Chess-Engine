@@ -1,8 +1,10 @@
 import numpy as np
 from abc import ABC, abstractmethod
 from copy import deepcopy
+import torch
 
 letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+piece_to_id = {piece:i+1 for i,piece in enumerate(["pawn", "rook", "knight", "bishop", "queen", "king"])}
 
 class Piece():
     def __init__(self, x: int, y: int, name: str, color: int):
@@ -12,13 +14,26 @@ class Piece():
         self.color = color
         self.name = name
         self.hasmoved = False
-        if name =="knight" : self.PGN_letter = "N"
-        elif name == "queen": self.PGN_letter = "Q"
-        elif name == "rook": self.PGN_letter = "R"
-        elif name == "bishop": self.PGN_letter = "B"
-        elif name == "pawn": self.PGN_letter = ""
-        elif name == "king": self.PGN_letter = "K"
+        if name =="knight" :
+             self.PGN_letter = "N"
+             self.piece_type_id = 3
+        elif name == "queen":
+             self.PGN_letter = "Q"
+             self.piece_type_id = 5
+        elif name == "rook":
+             self.PGN_letter = "R"
+             self.piece_type_id = 2
+        elif name == "bishop":
+             self.PGN_letter = "B"
+             self.piece_type_id = 4
+        elif name == "pawn":
+             self.PGN_letter = ""
+             self.piece_type_id = 1
+        elif name == "king":
+             self.PGN_letter = "K"
+             self.piece_type_id = 6
         else : raise ValueError("Piece name not accepted. Please choose one of 'pawn', 'rook', 'knigh', 'bishop', 'queen', 'king'.")
+        self.piece_type_id += (1-color) * 6
 
     def __str__(self):
         return f'{"white" if self.color else "black"} {self.name} at position {letters[self.x]}{8-self.y}'
@@ -32,8 +47,10 @@ class Chessboard:
         self.width = width
         self.height = height
         self.board = np.full((width, height), None, dtype=object)
+        self.tensorboard = torch.zeros((width* height,), dtype=torch.int)
         for piece in self.pieces:
             self.board[piece.x, piece.y] = piece
+            self.tensorboard[8*piece.x+ piece.y] = piece.piece_type_id
 
     def get_piece_legal_moves(self, piece:Piece, depth:int=0, collide_mode: bool = False):
         start_location = np.array([piece.x, piece.y])
@@ -200,6 +217,7 @@ class Chessboard:
             new_rook_x = start[0] + 2*(end[0]>start[0])-1
             castling_rook = self.board[(end[0]>start[0])*7, start[1]]
             self.board[castling_rook.x, start[1]] = None
+            self.tensorboard[8*castling_rook.x+ start[1]] = 0
             castling_rook.x = new_rook_x
             selected_piece.x = end[0]
             self.board[end[0], end[1]] = selected_piece
@@ -207,10 +225,15 @@ class Chessboard:
             self.board[start[0], start[1]] = None
             castling_rook.hasmoved = True
             selected_piece.hasmoved = True
+            self.tensorboard[8*end[0] + end[1]] = 6
+            self.tensorboard[8*start[0] + start[1]] = 0
+            self.tensorboard[8*new_rook_x+ start[1]] = 2
             return 0 
 
         self.board[end[0], end[1]] = selected_piece
         self.board[start[0], start[1]] = None
+        self.tensorboard[8*start[0] + start[1]] = 0
+        self.tensorboard[8*end[0] + end[1]] = selected_piece.piece_type_id
         selected_piece.x = end[0]
         selected_piece.y = end[1]
         selected_piece.hasmoved = True
