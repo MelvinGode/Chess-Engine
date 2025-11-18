@@ -78,15 +78,15 @@ class Actor(nn.Module):
         super(Actor, self).__init__()
         self.base = base
         self.decision_layer = nn.Linear(base.latent_dim *8 * 8, 8*8)
-        self.softmax = nn.Softmax(1)
+        self.logsoftmax = nn.LogSoftmax(1)
 
     def forward(self, x, legal_positions, iswhite):
         x = self.base(x).view((x.shape[0], -1))
         x = self.decision_layer(x) * (2*iswhite-1)
-        mask = torch.full(8*8, -torch.inf,  device = x.device)
+        mask = torch.full((8*8,), -torch.inf,  device = x.device)
         mask[legal_positions] = 0
         x = x + mask
-        x = self.softmax(x)
+        x = self.logsoftmax(x)
         return x
     
 
@@ -121,7 +121,7 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
         advantage = advantage * (2*(torch.arange(n_moves)%2==0) -1).to("cuda")
         # shuffle_index = torch.randperm(n_moves)
         # estimated_win_probs, piece_log_probs, end_log_probs, advantage = estimated_win_probs[shuffle_index].to("cuda"), piece_log_probs[shuffle_index].to("cuda"), end_log_probs[shuffle_index].to("cuda"), advantage[shuffle_index].to('cuda')
-        if winner==0: targets = torch.zeros(n_moves, devide='cuda')
+        if winner==0: targets = torch.zeros(n_moves, device='cuda')
         else: targets = winner * gamma ** torch.arange(n_moves-1, -1, -1, device="cuda")
         critic_loss = F.mse_loss(estimated_win_probs, targets)
 
@@ -176,4 +176,3 @@ train_self_play(critic, high_actor, low_actor, 1_000)
 # TODO
 # Update after batch of games with random selection
 # Add dropout
-# Add skip connections

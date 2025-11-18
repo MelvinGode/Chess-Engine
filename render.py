@@ -6,6 +6,7 @@ from copy import deepcopy
 from pygame import mixer
 import time
 import torch
+import re
 
 capital_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
 letters = [letter.lower() for letter in capital_letters]
@@ -38,11 +39,17 @@ class Game:
 
         os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
-    def load_PGN(self, PGN_string:str):
+    def load_PGN(self, PGN_string:str, history_mode:bool = False):
+        # TODO promotions
         self.PGN = PGN_string
         self.board = chessgame.create_classic_board()
-        playing_side = 0
-        current_turn = 0
+        playing_side = 1
+        current_turn = 1
+
+        if history_mode : states = [self.board.tensorboard.clone()]
+
+        PGN_string = re.sub(r"[0-9]+\.(\.\.)? |\+|x|#", "", PGN_string)
+
         for item in PGN_string.split(" "):
             if not item : break
             dotloc = item.find(".")
@@ -50,21 +57,22 @@ class Game:
                 current_turn = int(item[:dotloc])
                 playing_side = 1-item.endswith('...')
                 item = item[dotloc + 1 + 2*(1-playing_side):]
-            else:
-                playing_side = 1-playing_side
 
             if item.startswith('O-O'): # Castling
                 if item == 'O-O-O': start, end = [4, playing_side*7], [2, playing_side*7]
                 elif item == "O-O": start, end = [4, playing_side*7], [6, playing_side*7]
             else:
-                item = item.replace("x","").replace("+","").replace("#","")
                 end = [letter_indexes[item[-2]], 8-int(item[-1])]
                 ispawn = item[0] != item[0].capitalize()
                 piece_letter = item[0] if not ispawn else ""
                 fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=playing_side if piece_letter else 1-playing_side) # If pawn, set to black for it to be moving in the backwards direction
                 fakepiece.hasmoved = True
-                possible_sources = self.board.get_piece_legal_moves(fakepiece, collide_mode=True)
-                if not len(possible_sources): raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+                possible_sources = self.board.get_piece_potential_moves(fakepiece, collide_mode=True)
+                if not len(possible_sources): 
+                    self._create_window()
+                    self._display_board()
+                    input()
+                    raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
                 elif len(possible_sources)==1: start = possible_sources[0]
                 else: # ambiguity
                     if len(item) == 4 - ispawn:
@@ -74,15 +82,27 @@ class Game:
                         except Exception:
                             startfile = letter_indexes[item[1 - ispawn]]
                             start = possible_sources[possible_sources[:,0]==startfile][0]
-                    elif len(item) == 5 :
+                    elif len(item) == 5 - ispawn:
                         start = [letter_indexes[item[1 - ispawn]], int(item[2 - ispawn])]
+                    else:
+                        raise ValueError(f"Ambiguous move detected but no disambiguing information in PGN.\n{'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
 
             illegal = self.board.move(start, end)
-            if illegal: raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+            if illegal:
+                self._create_window()
+                self._display_board()
+                input()
+                raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+            playing_side = 1-playing_side
+            if playing_side : current_turn +=1
+            if history_mode : states.append(self.board.tensorboard.clone())
+
         self.turn_counter = int(current_turn)
         print(f"Loaded PGN, turn {self.turn_counter}")
         self.current_PGN_index = len(PGN_string)
         self.playing_color = 1-playing_side
+
+        if history_mode : return torch.stack(states)
 
 
     def _shift_game_state(self, forward:bool):
@@ -212,7 +232,7 @@ class Game:
             file_ambiguity, rank_ambiguity = False, False
             for piece in self.previous_board.board.ravel():
                 if piece is None or piece.name!=self.selected_piece.name or piece.color!=self.selected_piece.color or (piece.x==start[0] and piece.y==start[1]): continue
-                if np.any( np.all(self.previous_board.get_piece_legal_moves(piece)[:,1,:] == np.array(end), axis=1) ):
+                if np.any( np.all(self.previous_board.get_piece_potential_moves(piece)[:,1,:] == np.array(end), axis=1) ):
                     ambiguity = True
                     if piece.x == self.selected_piece.x: file_ambiguity = True
                     elif piece.y == self.selected_piece.y: rank_ambiguity = True
@@ -228,6 +248,34 @@ class Game:
         if self.gameover and not self.PGN.endswith('#') : self.PGN[-1] = '#'
         self._save_PGN(filepath)
         self.current_PGN_index = len(self.PGN)
+
+    def _is_current_player_in_check(self, opponent_moves):
+        self.check[self.playing_color] = False
+        for end in opponent_moves[:,1,:]:
+            if self.board[tuple(end)] is not None and self.board[tuple(end)].name=="king" :
+                self.check[self.playing_color] = True
+                return True
+        return False
+    
+    def _has_legal_moves(self, potential_moves):
+        for move in potential_moves:
+            fake_board = deepcopy(self.board)
+            illegality_flag = fake_board.move(move[0], move[1])
+            if not illegality_flag:
+                return True
+        return False
+    
+    def _check_game_end(self):
+        next_moves = self.board.get_all_potential_moves(self.playing_color)
+        opponent_moves = self.board.get_all_potential_moves(1-self.playing_color)
+        check = self._is_current_player_in_check(opponent_moves)
+        can_move = self._has_legal_moves(next_moves)
+
+        if not can_move:
+            self.game_over = True
+            if check : return 1-self.playing_color # Mate
+            return 0.5 # Pat
+        return -1
     
     def play_human_human_game(self):
         self._create_window()
@@ -241,16 +289,15 @@ class Game:
         while running:
             for event in pygame.event.get():
                 if self.gameover:
-                    self.PGN = self.PGN[:-1] + '#' + f'{0 if self.playing_color else 1}-{1 if self.playing_color else 0}'
+                    if np.isclose(self.winner, 0.5) : self.PGN += f' ½-½'
+                    else : self.PGN = self.PGN[:-1] + '#' + f' {0 if self.playing_color else 1}-{1 if self.playing_color else 0}'
                     self._display_board()
-
                     if event.type == pygame.QUIT:
                         running=False
                         break
 
                     if event.type==pygame.MOUSEBUTTONDOWN:
                         for button in self.buttons: button.trigger_if_pressed(pygame.mouse.get_pos())
-
                     continue
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
@@ -279,15 +326,7 @@ class Game:
                         
                         print(f'{str(self.selected_piece).replace("at", "to")} from {letters[previous_coords[0]]}{8-previous_coords[1]}')
 
-                        #mate checker
-                        next_moves = self.board.get_all_legal_moves(self.playing_color)
-                        self.gameover = True
-                        for move in next_moves: # Check if next player has at least one legal move
-                            fake_board = deepcopy(self.board)
-                            illegality_flag = fake_board.move(move[0], move[1])
-                            if not illegality_flag:
-                                self.gameover = False
-                                break
+                        self.winner = self._check_game_end()
 
                         #PGN update
                         self._update_PGN(previous_coords, board_coords)
@@ -297,16 +336,7 @@ class Game:
                         else: mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
 
                         #Turn change
-                        self.selected_piece = None                        
-
-                        #check checker
-                        # if check[playing_color]: 
-                        #     check[playing_color] = False # You cannot have stayed in check on your opponent's turn
-                        #     continue
-                        # opponent_moves = board.get_all_legal_moves(1-playing_color)
-                        # for landing in next_moves[:,1,:]:
-                        #     if board.board[landing[0], landing[1]].name=="king" and board.board[landing[0], landing[1]].color != playing_color: #Check for color needed because castling can land a piece on where king currently is
-                        #         white_check = True
+                        self.selected_piece = None
                     
                     else:# If we just picked up a piece
                         self._display_board()
@@ -317,7 +347,7 @@ class Game:
                             self.selected_piece = None
                             continue
                         # print(f"Selected {'white' if self.selected_piece.color else 'black'} {self.selected_piece.name}")
-                        moves = self.board.get_piece_legal_moves(self.selected_piece)
+                        moves = self.board.get_piece_potential_moves(self.selected_piece)
                         end_coords = moves[:, 1, :]
                         if len(end_coords)==0:
                             self.selected_piece = None
@@ -340,9 +370,10 @@ class Game:
         end_log_probs = []
 
         turn_count = 0
+        winner = 0.5
         while not self.gameover and turn_count<max_turns:
             #mate checker
-            next_moves = self.board.get_all_legal_moves(self.playing_color)
+            next_moves = self.board.get_all_potential_moves(self.playing_color)
             legal_moves = []
             self.gameover = True
             for move in next_moves: # Check if next player has at least one legal move
@@ -351,7 +382,10 @@ class Game:
                 if not illegality_flag:
                     self.gameover = False
                     legal_moves.append(move)
-            if self.gameover: break
+            if self.gameover:
+                opponent_moves = self.board.get_all_potential_moves(1-self.playing_color)
+                if self._is_current_player_in_check(opponent_moves): winner = 1-self.playing_color
+                break
             legal_moves = np.array(legal_moves, dtype=int)
             legal_moves = 8* legal_moves[:,:, 0] + legal_moves[:,:,1] #convert to 1D
 
@@ -371,12 +405,12 @@ class Game:
                 print(f'Explored: {explore}')
                 print(f"Error {e}")
                 raise ValueError("ahh")
-            if np.random.random()>= epsilon: 
-                selected_end = selected_end_probas.argmax().to("cpu")
+            explore2 = np.random.random()< epsilon
+            if not explore2: selected_end = selected_end_probas.argmax().to("cpu")
             else: selected_end = np.random.choice(np.unique(legal_moves[np.isclose(legal_moves[:,0], selected_start), 1]))
 
-            piece_log_probs.append(torch.log(selected_start_probas[selected_start]))
-            end_log_probs.append(torch.log(selected_end_probas[selected_end]))
+            piece_log_probs.append(selected_start_probas[selected_start])
+            end_log_probs.append(selected_end_probas[selected_end])
 
             start = np.array([selected_start//8, selected_start%8])
             end = np.array([selected_end//8, selected_end%8])
@@ -385,8 +419,9 @@ class Game:
             # print(f'start : {start}, end : {end}')
             if self.board.move(start, end):
                 print(f'Legal moves : {legal_moves}')
-                print(f'Selected start: {selected_start}. Explored: {explore}')
+                print(f'Selected start: {selected_start}. Explored: {explore}, explore2: {explore2}')
                 print(f'selected start: {selected_start}, 1st Mask: {np.unique(legal_moves[:,0])}. Selected end: {selected_end}. 2nd Mask: {legal_moves[legal_moves[:,0]==selected_start, 1]}')
+                print(f'Start probas: {selected_start_probas}\nEnd probas: {selected_end_probas}')
                 raise ValueError(f"AI somehow played an illegal move: {start} to {end}. ")
 
             #Turn change
@@ -398,7 +433,6 @@ class Game:
 
             turn_count+=1
 
-        winner = 2*(1-self.playing_color)-1 if turn_count<max_turns else 0
         return torch.stack(game_states), torch.stack(piece_log_probs), torch.stack(end_log_probs), winner
 
 
@@ -433,7 +467,7 @@ class Button:
 
 if __name__ == "__main__":
     game = Game()
-    with open("PGN/AI/1762783942.0622911.pgn", 'r', encoding="utf-8") as f:
+    with open("PGN/papamelvin.pgn", 'r', encoding="utf-8") as f:
         pgnstring = f.read()
 
     game.load_PGN(pgnstring)

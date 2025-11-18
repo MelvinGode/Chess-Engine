@@ -48,11 +48,12 @@ class Chessboard:
         self.height = height
         self.board = np.full((width, height), None, dtype=object)
         self.tensorboard = torch.zeros((width* height,), dtype=torch.int)
+        self.en_passant_location = None
         for piece in self.pieces:
             self.board[piece.x, piece.y] = piece
             self.tensorboard[8*piece.x+ piece.y] = piece.piece_type_id
 
-    def get_piece_legal_moves(self, piece:Piece, depth:int=0, collide_mode: bool = False):
+    def get_piece_potential_moves(self, piece:Piece, depth:int=0, collide_mode: bool = False):
         start_location = np.array([piece.x, piece.y])
         player_color = piece.color
         moves = [] # Array with dims nb_legal_moves*2*2 for start-finish coords and x-y
@@ -107,17 +108,21 @@ class Chessboard:
                     if start_location[1] + collide_mode * color_multiplier*2 == player_color * (self.height-1) + collide_mode * color_multiplier * (self.height-1) + color_multiplier * (2*(1-collide_mode)-1) and two_ahead[1]>=0 and two_ahead[1]<=self.height :
                         if self.board[two_ahead[0], two_ahead[1]] is None :
                             moves.append([start_location, two_ahead])
-                        elif collide_mode and self.board[two_ahead[0], two_ahead[1]].PGN_letter == piece.PGN_letter and self.board[two_ahead[0], two_ahead[1]].color != piece.color: collisions.append(two_ahead)
-                elif collide_mode and self.board[one_ahead[0], one_ahead[1]].PGN_letter == piece.PGN_letter and self.board[one_ahead[0], one_ahead[1]].color != piece.color: collisions.append(one_ahead)
+                        elif collide_mode and self.board[two_ahead[0], two_ahead[1]].PGN_letter == piece.PGN_letter and self.board[two_ahead[0], two_ahead[1]].color != piece.color and self.board[tuple(start_location)] is None: collisions.append(two_ahead)
+                elif collide_mode and self.board[one_ahead[0], one_ahead[1]].PGN_letter == piece.PGN_letter and self.board[one_ahead[0], one_ahead[1]].color != piece.color and self.board[tuple(start_location)] is None: collisions.append(one_ahead)
 
             #diagonal kills
             for kill_location in start_location + np.array([[1, color_multiplier], [-1, color_multiplier]]):
                 if np.any(kill_location < 0) or kill_location[0]>= self.width or kill_location[1]>=self.height:continue
-                try: 
-                    if self.board[kill_location[0], kill_location[1]] is not None and self.board[kill_location[0], kill_location[1]].color != player_color:
-                        moves.append([start_location, kill_location])
-                        if self.board[piece.x, piece.y] is not None and self.board[start_location[0], start_location[1]].color == piece.color : collisions.append(kill_location)
-                except Exception: pass # If the pawn is on the edge of the board and thus will trigger out of bounds error
+                if (self.board[kill_location[0], kill_location[1]] is not None and self.board[kill_location[0], kill_location[1]].color != player_color) or (np.all(self.en_passant_location == kill_location)):
+                    moves.append([start_location, kill_location])
+                    if collide_mode:
+                        if np.all(self.en_passant_location == start_location) and self.board[tuple(kill_location)] is not None and self.board[tuple(kill_location)].name=="pawn" and self.board[tuple(kill_location)].color != piece.color: 
+                            collisions.append(kill_location)
+                        elif self.board[piece.x, piece.y] is not None and self.board[piece.x, piece.y].color == piece.color and self.board[kill_location[0], kill_location[1]].PGN_letter==piece.PGN_letter: # If there is an enemy piece to eat
+                            collisions.append(kill_location)
+
+
             # Fuck en-passant, all my homies hate en-passant
         
         if piece.name in ["jester", "bishop"]:
@@ -181,11 +186,11 @@ class Chessboard:
         return moves
 
                         
-    def get_all_legal_moves(self, player_color: int, depth:int=0):
+    def get_all_potential_moves(self, player_color: int, depth:int=0):
         moves = [] # Array with dims nb_legal_moves*2*2 for start-finish coords and x-y
         for piece in self.board.ravel():
             if piece is None or piece.color != player_color : continue
-            moves.extend(self.get_piece_legal_moves(piece, depth=depth))
+            moves.extend(self.get_piece_potential_moves(piece, depth=depth))
         return np.array(moves)
     
     def move(self, start, end, depth:int=0):
@@ -198,20 +203,28 @@ class Chessboard:
         #Check if move is legal
         selected_piece = self.board[start[0], start[1]]
         if selected_piece is None : return 1
-        legal_moves = self.get_piece_legal_moves(selected_piece, depth=1)[:,1,:]
+        legal_moves = self.get_piece_potential_moves(selected_piece, depth=1)[:,1,:]
         if not np.any(np.logical_and(end[0]==legal_moves[:,0], end[1]==legal_moves[:,1])): return 1
 
         # Check if move exposes king
         if not depth:
             fakeboard = deepcopy(self)
             fakeboard.move(start,end, depth = 1)
-            opponent_moves = fakeboard.get_all_legal_moves(1-selected_piece.color, depth=1)
+            opponent_moves = fakeboard.get_all_potential_moves(1-selected_piece.color, depth=1)
             for opponent_end_position in opponent_moves[:, 1, :]:
                 attacked_piece = fakeboard.board[opponent_end_position[0], opponent_end_position[1]]
                 if attacked_piece is None: continue
                 if attacked_piece.name=="king" and attacked_piece.color == selected_piece.color: 
                     return 2# Can't play move since it leads to checkmate
-                
+        
+        # En passant
+        if selected_piece.name=="pawn" and np.all(self.en_passant_location == np.array(end)): # Kill passed pawn
+            self.board[self.en_passant_location[0], self.en_passant_location[1] + (2*selected_piece.color-1)] = None
+            self.tensorboard[self.en_passant_location[0]*8 + self.en_passant_location[1] - (2*selected_piece.color-1)] = 0
+        self.en_passant_location = None
+        if selected_piece.name=="pawn" and abs(end[1] - start[1])>1.5:
+            self.en_passant_location = np.array([start[0], end[1] + (2*selected_piece.color-1)])
+
         #Castle check
         if selected_piece.name=="king" and abs(end[0] -start[0])>1:
             new_rook_x = start[0] + 2*(end[0]>start[0])-1
@@ -242,6 +255,7 @@ class Chessboard:
         if selected_piece.name == "pawn" and selected_piece.color*(7-selected_piece.y) + (1-selected_piece.color)*selected_piece.y == 7:
             selected_piece.name="queen"
             selected_piece.PGN_letter = 'Q'
+
         return 0
 
     
@@ -281,6 +295,35 @@ def create_fucked_up_board():
     
     board = Chessboard(8, 8, pieces)
     return board
+
+import zstandard as zstd
+import io
+import os
+import re
+
+def extract_pgn_texts(filepath:str, nb_games:int):
+    dctx = zstd.ZstdDecompressor()
+    with open(filepath, "rb") as fh:
+        stream = dctx.stream_reader(fh)
+        text_stream = io.TextIOWrapper(stream, encoding="utf-8")
+
+        games = []
+        game=""
+
+        for line in text_stream:
+            if line.strip() =="":
+                if game.startswith("[Event") : 
+                    game=""
+                    continue
+                game = re.sub(r"{.+?}", "", game)
+                games.append(game)
+                game=""
+                if len(games) == nb_games: break
+
+            else:
+                game += line
+    
+    return games
 
 
 #TODO LIST
