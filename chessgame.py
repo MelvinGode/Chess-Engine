@@ -255,6 +255,7 @@ class Chessboard:
         if selected_piece.name == "pawn" and selected_piece.color*(7-selected_piece.y) + (1-selected_piece.color)*selected_piece.y == 7:
             selected_piece.name="queen"
             selected_piece.PGN_letter = 'Q'
+            self.tensorboard[8*start[0] + start[1]] = 5
 
         return 0
 
@@ -308,6 +309,7 @@ def extract_pgn_texts(filepath:str, nb_games:int):
         text_stream = io.TextIOWrapper(stream, encoding="utf-8")
 
         games = []
+        winners = []
         game=""
 
         for line in text_stream:
@@ -317,13 +319,15 @@ def extract_pgn_texts(filepath:str, nb_games:int):
                     continue
                 game = re.sub(r"{.+?}", "", game)
                 games.append(game)
+                if game[-3] =="/" : winners.append(0.5)
+                else : winners.append(int(game[-4]))
                 game=""
                 if len(games) == nb_games: break
 
             else:
                 game += line
     
-    return games
+    return games, winners
 
 
 #TODO LIST

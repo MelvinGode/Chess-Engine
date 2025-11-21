@@ -4,9 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import os
 from torch.utils.tensorboard import SummaryWriter
-
+from tqdm import tqdm
 import chessgame
 import render
+import matplotlib.pyplot as plt
 
 # piece_to_id = {piece:i+1 for i,piece in enumerate(["pawn", "rook", "knight", "bishop", "queen", "king"])}
 # def board_to_tensor(board):
@@ -153,6 +154,72 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
     torch.save(low_actor, f="models/low_actor.pt")
 
 
+def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, test_prop:float, eval_period:int, save_period:int = 0):
+    games, winners = chessgame.extract_pgn_texts("gamebank/lichess_db_standard_rated_2025-09.pgn.zst", nb_games)
+
+    state_tensor = []
+    winner_train = []
+    loss_decays = []
+    for game, winner in zip(games, winners):
+        session = render.Game()
+        try:
+            states = session.load_PGN(game, history_mode=True)
+        except Exception: continue
+        state_tensor.append(states)
+        winner_train.append(torch.full((len(states),), winner))
+        loss_decays.append(0.99 ** torch.arange(len(states), -1, -1))
+
+    state_tensor, winner_train, loss_decays = torch.cat(state_tensor,0).to("cuda"), torch.cat(winner_train,0).to("cuda"), torch.cat(loss_decays,0).to("cuda")
+    train_cutoff = round(len(state_tensor)*(1-test_prop))
+    x_train, x_test = state_tensor[:train_cutoff], state_tensor[train_cutoff:]
+    y_train, y_test = winner_train[:train_cutoff], winner_train[train_cutoff:]
+    decay_train, decay_test = loss_decays[:train_cutoff], loss_decays[train_cutoff:]
+
+    optimizer = torch.optim.AdamW(params= critic.parameters())
+    critic.train()
+    vector_bce = lambda pred, target : target * -torch.log(pred) + (1-target) * torch.log(1-pred)
+
+    train_losses, test_losses = [], []
+    step_count = 0
+    for epoch in range(epochs):
+        print("Epoch",epoch+1)
+        perm = torch.randperm(len(x_train))
+
+        for i in tqdm(range(0, len(x_train), batch_size)):
+            step_count +=1
+            ceiling = min(i+batch_size, len(x_train))
+
+            x_batch = x_train[perm[i:ceiling]]
+            y_batch = y_train[perm[i:ceiling]]
+            loss_weights = decay_train[perm[i:ceiling]]
+
+            pred = critic(x_batch)
+            loss = torch.mean(vector_bce(pred, y_batch) * loss_weights)
+            train_losses.append(loss.item())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if step_count % save_period ==0:
+                torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
+
+            if step_count % eval_period == 0:
+                critic.eval()
+                pred = critic(x_test)
+                loss = torch.mean(vector_bce(pred, y_test) * decay_test)
+                test_losses.append(loss.item())
+                critic.train()
+
+    try:
+        plt.plot(train_losses)
+        plt.plot(torch.arange(eval_period, step_count, eval_period), test_losses)
+        plt.grid(True)
+    except Exception as e:
+        print(f'Error for the plot: {e}')
+
+    torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
+    return critic
+
 # game = render.Game()
 # embedlayer = nn.Embedding(7, 128).to("cuda")
 # tensorboard = board_to_tensor(game.board.board)
@@ -171,7 +238,8 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
 # exit()
 
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
-train_self_play(critic, high_actor, low_actor, 1_000)
+pretrain_critic(critic, 10_000, 1, 1000, test_prop=0.05, eval_period=100, save_period=1000)
+# train_self_play(critic, high_actor, low_actor, 1_000)
 
 # TODO
 # Update after batch of games with random selection

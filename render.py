@@ -12,6 +12,7 @@ capital_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
 letters = [letter.lower() for letter in capital_letters]
 letter_indexes = {letters[i]:i for i in range(len(letters))}
 piece_full_names = {letter:full for full, letter in zip(["pawn", "king", "knight", "rook", "bishop", "queen"], ["", "K", "N", "R", "B", "Q"])}
+piece_letter_indexes = {letter: i+1 for i, letter in enumerate(['', "R", "N", "B", "Q", 'K'])}
 
 pygame.init()
 
@@ -48,10 +49,11 @@ class Game:
 
         if history_mode : states = [self.board.tensorboard.clone()]
 
-        PGN_string = re.sub(r"[0-9]+\.(\.\.)? |\+|x|#", "", PGN_string)
+        PGN_string = re.sub(r"[0-9]+\.(\.\.)? |\+|x|#|\?|!", "", PGN_string).strip()
 
         for item in PGN_string.split(" "):
-            if not item : break
+            promotion= ''
+            if not item : continue
             dotloc = item.find(".")
             if dotloc>0:
                 current_turn = int(item[:dotloc])
@@ -61,38 +63,57 @@ class Game:
             if item.startswith('O-O'): # Castling
                 if item == 'O-O-O': start, end = [4, playing_side*7], [2, playing_side*7]
                 elif item == "O-O": start, end = [4, playing_side*7], [6, playing_side*7]
+                else : raise ValueError()
+            elif item.find("-")>0: break
             else:
+                if item[-2]=="=" : 
+                    promotion = item[-1]
+                    item=item[:-2]
                 end = [letter_indexes[item[-2]], 8-int(item[-1])]
                 ispawn = item[0] != item[0].capitalize()
                 piece_letter = item[0] if not ispawn else ""
                 fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=playing_side if piece_letter else 1-playing_side) # If pawn, set to black for it to be moving in the backwards direction
                 fakepiece.hasmoved = True
                 possible_sources = self.board.get_piece_potential_moves(fakepiece, collide_mode=True)
-                if not len(possible_sources): 
+                legal_sources = []
+                for start in possible_sources:
+                    fakeboard = deepcopy(self.board)
+                    if not fakeboard.move(start, end): legal_sources.append(start)
+                legal_sources= np.array(legal_sources)
+                if not len(legal_sources):
                     self._create_window()
                     self._display_board()
                     input()
                     raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
-                elif len(possible_sources)==1: start = possible_sources[0]
+                elif len(legal_sources)==1: start = legal_sources[0]
                 else: # ambiguity
                     if len(item) == 4 - ispawn:
-                        try:
-                            startrank = int(item[1 - ispawn])
-                            start = possible_sources[possible_sources[:,1]==startrank][0]
-                        except Exception:
+                        try: # rank ambiguity
+                            startrank = 8-int(item[1 - ispawn])
+                            start = legal_sources[legal_sources[:,1]==startrank][0]
+                        except Exception as e: # file ambiguity
                             startfile = letter_indexes[item[1 - ispawn]]
-                            start = possible_sources[possible_sources[:,0]==startfile][0]
-                    elif len(item) == 5 - ispawn:
-                        start = [letter_indexes[item[1 - ispawn]], int(item[2 - ispawn])]
+                            start = legal_sources[legal_sources[:,0]==startfile][0]
+                    elif len(item) == 5 - ispawn: # both ambiguities
+                        start = [letter_indexes[item[1 - ispawn]], 8-int(item[2 - ispawn])]
                     else:
+                        print(item)
+                        print(legal_sources)
+                        for a in self.board.board[tuple(legal_sources.T)] : print(a)
+                        self._create_window()
+                        self._display_board()
+                        input()
                         raise ValueError(f"Ambiguous move detected but no disambiguing information in PGN.\n{'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
-
             illegal = self.board.move(start, end)
             if illegal:
                 self._create_window()
                 self._display_board()
                 input()
                 raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+            if promotion : 
+                self.board.board[tuple(end)].PGN_letter = promotion
+                self.board.board[tuple(end)].name = piece_full_names[promotion]
+                self.board.tensorboard[8*end[0] + end[1]].PGN_letter = piece_letter_indexes[promotion]
             playing_side = 1-playing_side
             if playing_side : current_turn +=1
             if history_mode : states.append(self.board.tensorboard.clone())
