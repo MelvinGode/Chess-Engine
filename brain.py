@@ -8,6 +8,7 @@ from tqdm import tqdm
 import chessgame
 import render
 import matplotlib.pyplot as plt
+import re
 
 # piece_to_id = {piece:i+1 for i,piece in enumerate(["pawn", "rook", "knight", "bishop", "queen", "king"])}
 # def board_to_tensor(board):
@@ -66,12 +67,12 @@ class Critic(nn.Module):
         super(Critic, self).__init__()
         self.base = base
         self.classification_layer = nn.Linear(base.latent_dim * 8 * 8, 1)
-        self.tanh = nn.Tanh()
+        self.activation = nn.Sigmoid()
     
     def forward(self, x):
         x = self.base(x).view((x.shape[0], -1))
         x = self.classification_layer(x)
-        x = self.tanh(x)
+        x = self.activation(x)
         return x
 
 class Actor(nn.Module):
@@ -155,25 +156,47 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
 
 
 def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, test_prop:float, eval_period:int, save_period:int = 0):
+
+    training_data = os.listdir("gamebank/")
+    loaded = False
+    try:
+        maxnbgames = max([int(re.search(r'(?<=_)\d+(?=\.pt)', filename).group(0)) for filename in training_data if re.search(r'(?<=_)\d+(?=\.pt)', filename)])
+        state_tensor = torch.load(f"gamebank/state_tensor_{maxnbgames}.pt")
+        winner_train = torch.load(f"gamebank/winner_tensor_{maxnbgames}.pt")
+        loss_decays = torch.load(f"gamebank/loss_weights_{maxnbgames}.pt")
+        if maxnbgames> nb_games:
+            state_tensor, winner_train, loss_decays = state_tensor[:nb_games], winner_train[:nb_games], loss_decays[:nb_games]
+        startpoint = maxnbgames
+        print("Loaded saved training data")
+    except Exception as e:
+        print(f'Exception {e}')
+        startpoint=0
+        state_tensor, winner_train, loss_decays = torch.zeros((0, 64), dtype=int), torch.zeros((0,), dtype=int), torch.zeros((0,))
+
     games, winners = chessgame.extract_pgn_texts("gamebank/lichess_db_standard_rated_2025-09.pgn.zst", nb_games)
-
-    state_tensor = []
-    winner_train = []
-    loss_decays = []
-    for game, winner in zip(games, winners):
+    
+    state_list, winner_list, loss_list = [state_tensor], [winner_train], [loss_decays]
+    for game, winner in zip(games[startpoint:nb_games], winners[startpoint:nb_games]):
+        loaded = False
         session = render.Game()
-        try:
-            states = session.load_PGN(game, history_mode=True)
-        except Exception: continue
-        state_tensor.append(states)
-        winner_train.append(torch.full((len(states),), winner))
-        loss_decays.append(0.99 ** torch.arange(len(states), -1, -1))
+        states = session.load_PGN(game, history_mode=True)
+        state_list.append(states)
+        winner_list.append(torch.full((len(states),), winner))
+        loss_list.append(0.99 ** torch.arange(len(states)-1, -1, -1))
 
-    state_tensor, winner_train, loss_decays = torch.cat(state_tensor,0).to("cuda"), torch.cat(winner_train,0).to("cuda"), torch.cat(loss_decays,0).to("cuda")
+    state_tensor, winner_train, loss_decays = torch.cat(state_list,0), torch.cat(winner_list,0), torch.cat(loss_list,0)
+    if not loaded:
+        torch.save(state_tensor, f'gamebank/state_tensor_{nb_games}.pt')
+        torch.save(winner_train, f'gamebank/winner_tensor_{nb_games}.pt')
+        torch.save(loss_decays, f'gamebank/loss_weights_{nb_games}.pt')
+
     train_cutoff = round(len(state_tensor)*(1-test_prop))
+    print("test set size",len(state_tensor)-train_cutoff)
     x_train, x_test = state_tensor[:train_cutoff], state_tensor[train_cutoff:]
     y_train, y_test = winner_train[:train_cutoff], winner_train[train_cutoff:]
     decay_train, decay_test = loss_decays[:train_cutoff], loss_decays[train_cutoff:]
+    # print(x_test.shape, y_test.shape, decay_test.shape)
+    # print(state_tensor.shape, winner_train.shape, loss_decays.shape)
 
     optimizer = torch.optim.AdamW(params= critic.parameters())
     critic.train()
@@ -189,9 +212,9 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
             step_count +=1
             ceiling = min(i+batch_size, len(x_train))
 
-            x_batch = x_train[perm[i:ceiling]]
-            y_batch = y_train[perm[i:ceiling]]
-            loss_weights = decay_train[perm[i:ceiling]]
+            x_batch = x_train[perm[i:ceiling]].to("cuda")
+            y_batch = y_train[perm[i:ceiling]].to("cuda")
+            loss_weights = decay_train[perm[i:ceiling]].to("cuda")
 
             pred = critic(x_batch)
             loss = torch.mean(vector_bce(pred, y_batch) * loss_weights)
@@ -205,11 +228,12 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
 
             if step_count % eval_period == 0:
                 critic.eval()
-                pred = critic(x_test)
-                loss = torch.mean(vector_bce(pred, y_test) * decay_test)
+                pred = critic(x_test.to("cuda"))
+                loss = torch.mean(vector_bce(pred, y_test.to("cuda")) * decay_test.to("cuda"))
                 test_losses.append(loss.item())
                 critic.train()
 
+    torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
     try:
         plt.plot(train_losses)
         plt.plot(torch.arange(eval_period, step_count, eval_period), test_losses)
@@ -217,7 +241,6 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
     except Exception as e:
         print(f'Error for the plot: {e}')
 
-    torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
     return critic
 
 # game = render.Game()
@@ -238,7 +261,7 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
 # exit()
 
 os.chdir(os.path.dirname(os.path.realpath(__file__)))
-pretrain_critic(critic, 10_000, 1, 1000, test_prop=0.05, eval_period=100, save_period=1000)
+pretrain_critic(critic, nb_games=10_000, epochs=10, batch_size=100, test_prop=0.01, eval_period=100, save_period=10000)
 # train_self_play(critic, high_actor, low_actor, 1_000)
 
 # TODO
