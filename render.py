@@ -33,6 +33,8 @@ class Game:
         self.check = [False, False]
         self.gameover = False
         self.PGN = ' '
+        self.move_history = np.empty((0, 2, 2), dtype=int)
+        self.moved_pieces_history = []
         self.start_time = time.time()
         self.turn_counter = 0
         self.playing_color = 1
@@ -40,10 +42,41 @@ class Game:
 
         os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
+    def _get_start_end_positions(self, item, piece_color, return_piece_name= False):
+        end = [letter_indexes[item[-2]], 8-int(item[-1])]
+        ispawn = item[0] != item[0].capitalize()
+        piece_letter = item[0] if not ispawn else ""
+        fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=piece_color if piece_letter else 1-piece_color) # If pawn, set to black for it to be moving in the backwards direction
+        fakepiece.hasmoved = True
+        possible_sources = self.board.get_piece_potential_moves(fakepiece, collide_mode=True)
+        legal_sources = []
+        for start in possible_sources:
+            fakeboard = deepcopy(self.board)
+            if not fakeboard.move(start, end): legal_sources.append(start)
+        legal_sources= np.array(legal_sources)
+        if not len(legal_sources): raise ValueError(f"Error: invalid move at {'white' if piece_color else 'black'}\'s move. End \'{end}\' ")
+        elif len(legal_sources)==1: start = legal_sources[0]
+        else: # ambiguity
+            if len(item) == 4 - ispawn:
+                try: # rank ambiguity
+                    startrank = 8-int(item[1 - ispawn])
+                    start = legal_sources[legal_sources[:,1]==startrank][0]
+                except Exception as e: # file ambiguity
+                    startfile = letter_indexes[item[1 - ispawn]]
+                    start = legal_sources[legal_sources[:,0]==startfile][0]
+            elif len(item) == 5 - ispawn: # both ambiguities
+                start = [letter_indexes[item[1 - ispawn]], 8-int(item[2 - ispawn])]
+            else: raise ValueError(f"Ambiguous move detected but no disambiguing information in PGN.\n{'white' if piece_color else 'black'}\'s move. End \'{end}\' ")
+        if return_piece_name : return start, end, piece_full_names[piece_letter]
+        return start, end
+
+
     def load_PGN(self, PGN_string:str, history_mode:bool = False):
         # TODO promotions
         self.PGN = PGN_string
         self.board = chessgame.create_classic_board()
+        self.move_history = np.empty((0, 2, 2), dtype=int)
+        self.moved_pieces_history = []
         playing_side = 1
         current_turn = 1
 
@@ -61,55 +94,23 @@ class Game:
                 item = item[dotloc + 1 + 2*(1-playing_side):]
 
             if item.startswith('O-O'): # Castling
-                if item == 'O-O-O': start, end = [4, playing_side*7], [2, playing_side*7]
-                elif item == "O-O": start, end = [4, playing_side*7], [6, playing_side*7]
+                if item == 'O-O-O': 
+                    start, end = [4, playing_side*7], [2, playing_side*7]
+                    moved_piece = "Queenside Castle"
+                elif item == "O-O": 
+                    start, end = [4, playing_side*7], [6, playing_side*7]
+                    moved_piece = "Kingside Castle"
                 else : raise ValueError()
             elif item.find("-")>0: break
             else:
-                if item[-2]=="=" : 
+                if item[-2]=="=" :
                     promotion = item[-1]
                     item=item[:-2]
-                end = [letter_indexes[item[-2]], 8-int(item[-1])]
-                ispawn = item[0] != item[0].capitalize()
-                piece_letter = item[0] if not ispawn else ""
-                fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=playing_side if piece_letter else 1-playing_side) # If pawn, set to black for it to be moving in the backwards direction
-                fakepiece.hasmoved = True
-                possible_sources = self.board.get_piece_potential_moves(fakepiece, collide_mode=True)
-                legal_sources = []
-                for start in possible_sources:
-                    fakeboard = deepcopy(self.board)
-                    if not fakeboard.move(start, end): legal_sources.append(start)
-                legal_sources= np.array(legal_sources)
-                if not len(legal_sources):
-                    self._create_window()
-                    self._display_board()
-                    input()
-                    raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
-                elif len(legal_sources)==1: start = legal_sources[0]
-                else: # ambiguity
-                    if len(item) == 4 - ispawn:
-                        try: # rank ambiguity
-                            startrank = 8-int(item[1 - ispawn])
-                            start = legal_sources[legal_sources[:,1]==startrank][0]
-                        except Exception as e: # file ambiguity
-                            startfile = letter_indexes[item[1 - ispawn]]
-                            start = legal_sources[legal_sources[:,0]==startfile][0]
-                    elif len(item) == 5 - ispawn: # both ambiguities
-                        start = [letter_indexes[item[1 - ispawn]], 8-int(item[2 - ispawn])]
-                    else:
-                        print(item)
-                        print(legal_sources)
-                        for a in self.board.board[tuple(legal_sources.T)] : print(a)
-                        self._create_window()
-                        self._display_board()
-                        input()
-                        raise ValueError(f"Ambiguous move detected but no disambiguing information in PGN.\n{'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+                start, end, moved_piece = self._get_start_end_positions(item, playing_side, return_piece_name=True)
             illegal = self.board.move(start, end)
-            if illegal:
-                self._create_window()
-                self._display_board()
-                input()
-                raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+            if illegal: raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
+            self.move_history = np.vstack(( self.move_history, np.expand_dims([start, end], 0)))
+            self.moved_pieces_history.append(moved_piece)
             if promotion : 
                 self.board.board[tuple(end)].PGN_letter = promotion
                 self.board.board[tuple(end)].name = piece_full_names[promotion]
@@ -120,8 +121,8 @@ class Game:
 
         self.turn_counter = int(current_turn)
         print(f"Loaded PGN, turn {self.turn_counter}")
-        self.current_PGN_index = len(PGN_string)
-        self.playing_color = 1-playing_side
+        self.current_PGN_index = len(self.PGN)
+        self.playing_color = playing_side
 
         if history_mode : return torch.stack(states)
 
@@ -129,11 +130,10 @@ class Game:
     def _shift_game_state(self, forward:bool):
         PGN_temp = self.PGN
         if forward: 
-            space_index = self.PGN[self.current_PGN_index:].find(' ')
+            space_index = self.PGN[self.current_PGN_index:].rstrip().find(' ')
         else : space_index = self.PGN[:max(self.current_PGN_index-1, 0)].rfind(' ')
         if space_index == -1:
-            if forward : new_PGN_index = len(self.PGN)
-            else : new_PGN_index = 0
+            new_PGN_index = len(self.PGN) if forward else 0
             if self.current_PGN_index == new_PGN_index : return
             self.current_PGN_index = new_PGN_index
         else:
@@ -151,7 +151,7 @@ class Game:
         #text
         pygame.font.get_init()
         self.font = pygame.font.SysFont('freesanbold.ttf', 50)
-        self.smallfont = pygame.font.SysFont('freesan.ttf', 30)
+        self.smallfont = pygame.font.SysFont('freesan.ttf', 25)
         whoseturnisit = self.font.render(f"{'White' if self.playing_color else 'Black'}\'s move", True, (255,255,255))
         self.turn_rect = whoseturnisit.get_rect()
         self.turn_rect.center = ((self.board.width * square_size)//2 + corner_x, self.board.height* square_size + corner_y + 100)
@@ -206,18 +206,39 @@ class Game:
             rect.center = (coords[0], coords[1])
             self.window.blit(sprite, rect)
 
+    def _display_last_moves(self):
+        k = 10
+        last_k_moves_list = []
+        current_color = 1-self.playing_color
+        for piece, move in zip(self.moved_pieces_history[max(0, len(self.move_history)-k):][::-1], self.move_history[max(0, len(self.move_history)-k):][::-1]):
+           last_k_moves_list.append(f'{"White" if current_color else "Black"} {piece} from {capital_letters[move[0,0]]}{8-move[0,1]} to {capital_letters[move[1,0]]}{8-move[1,1]}')
+           current_color = 1-current_color
+        
+        display_text = self.font.render(f"Last {k} moves", True, (255, 255, 255))
+        rect = display_text.get_rect()
+        rect.topleft = (margin[0]+ 8*square_size+50, margin[1] + 350 - 35)
+        self.window.blit(display_text, rect)
+
+        pygame.draw.rect(self.window, (255, 255, 255), [margin[0]+ 8*square_size+50, margin[1] + 350, 260, 370], 1)
+        for i, text_move in enumerate(last_k_moves_list):
+            display_text = self.smallfont.render(text_move, True, (255, 255, 255))
+            rect = display_text.get_rect()
+            rect.topleft = (margin[0]+ 8*square_size+50 + 5, margin[1] + 350 + 5 + 30*i)
+            self.window.blit(display_text, rect)
+        
+
     def _display_board(self): # TODO change to board.show(), need to modify board class and pass the right arguments initialized in create_window()
         self.window.fill(0)
         self._draw_grid()
         self._display_pieces()
         self._dispay_coords()
+        self._display_last_moves()
         [button.show() for button in self.buttons]
         whoseturnisit = self.font.render(f"{'White' if self.playing_color else 'Black'}\'s move", True, (255,255,255))
         if not self.gameover: self.window.blit(whoseturnisit, self.turn_rect)
         else : 
             winnertext = self.font.render(f"Checkmate, {'White' if 1-self.playing_color else 'Black'} wins", True, (255,255,255))
             self.window.blit(winnertext, self.winner_rect)
-
         pygame.display.update()
 
     def _save_PGN(self, filepath:str=''):
@@ -273,7 +294,7 @@ class Game:
     def _is_current_player_in_check(self, opponent_moves):
         self.check[self.playing_color] = False
         for end in opponent_moves[:,1,:]:
-            if self.board[tuple(end)] is not None and self.board[tuple(end)].name=="king" :
+            if self.board.board[tuple(end)] is not None and self.board.board[tuple(end)].name=="king" :
                 self.check[self.playing_color] = True
                 return True
         return False
@@ -298,7 +319,7 @@ class Game:
             return 0.5 # Pat
         return -1
     
-    def play_human_human_game(self):
+    def play_human_human_game(self, critic=None):
         self._create_window()
 
         running=True

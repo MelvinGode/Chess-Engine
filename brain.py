@@ -236,7 +236,7 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
     torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
     try:
         plt.plot(train_losses)
-        plt.plot(torch.arange(eval_period, step_count, eval_period), test_losses)
+        plt.plot(torch.arange(eval_period, step_count+1, eval_period), test_losses)
         plt.grid(True)
     except Exception as e:
         print(f'Error for the plot: {e}')
