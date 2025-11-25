@@ -92,18 +92,8 @@ class Actor(nn.Module):
         return x
     
 
-base = Base_transformer(n_layers=3, latent_dim=128, num_heads=1)
-
-critic = Critic(base)
-high_actor = Actor(base)
-low_actor = Actor(base)
-
-critic.to('cuda')
-high_actor.to('cuda')
-low_actor.to('cuda')
-
 def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
-    critic_optimizer = torch.optim.AdamW(params = critic.parameters())
+    critic_optimizer = torch.optim.AdamW(params = critic.parameters(), lr=1e-5)
     high_actor_optimizer = torch.optim.AdamW(params = high_actor.parameters())
     low_actor_optimizer = torch.optim.AdamW(params = low_actor.parameters())
     
@@ -123,9 +113,10 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
         advantage = advantage * (2*(torch.arange(n_moves)%2==0) -1).to("cuda")
         # shuffle_index = torch.randperm(n_moves)
         # estimated_win_probs, piece_log_probs, end_log_probs, advantage = estimated_win_probs[shuffle_index].to("cuda"), piece_log_probs[shuffle_index].to("cuda"), end_log_probs[shuffle_index].to("cuda"), advantage[shuffle_index].to('cuda')
-        if winner==0: targets = torch.zeros(n_moves, device='cuda')
-        else: targets = winner * gamma ** torch.arange(n_moves-1, -1, -1, device="cuda")
-        critic_loss = F.mse_loss(estimated_win_probs, targets)
+        targets = torch.full((n_moves,), winner, dtype=torch.float).to("cuda")
+        discount = (gamma ** torch.arange(n_moves-1, -1, -1)).to("cuda")
+        print(estimated_win_probs.type(), targets.type(), discount.type())
+        critic_loss = (F.binary_cross_entropy(estimated_win_probs, targets, reduction='none') * discount).mean()
 
         high_actor_loss = torch.mean(-piece_log_probs * advantage) * 100
         low_actor_loss = torch.mean(-end_log_probs * advantage) * 100
@@ -140,7 +131,7 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
         losses[i] = torch.tensor([critic_loss.item(), high_actor_loss.item(), low_actor_loss.item()])
         # print(f'Losses : {losses[i]}')
 
-        critic_loss.backward(retain_graph=True)
+        critic_loss.backward()
         high_actor_loss.backward(retain_graph=True)
         low_actor_loss.backward()
 
@@ -148,11 +139,13 @@ def train_self_play(critic, high_actor, low_actor, n_games, gamma = 0.99):
         high_actor_optimizer.step()
         low_actor_optimizer.step()
 
-        print(f"Finished game {i+1}. Outcome: {winner}")
+        print(f"Finished game {i+1}. Outcome: {winner} after {n_moves} moves")
 
-    torch.save(critic, f="models/critic.pt")
-    torch.save(high_actor, f="models/high_actor.pt")
-    torch.save(low_actor, f="models/low_actor.pt")
+    torch.save(critic.state_dict(), f="models/critic.pth")
+    torch.save(high_actor.state_dict(), f="models/high_actor.pth")
+    torch.save(low_actor.state_dict(), f="models/low_actor.pth")
+
+    return critic, high_actor, low_actor
 
 
 def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, test_prop:float, eval_period:int, save_period:int = 0):
@@ -165,7 +158,7 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
         winner_train = torch.load(f"gamebank/winner_tensor_{maxnbgames}.pt")
         loss_decays = torch.load(f"gamebank/loss_weights_{maxnbgames}.pt")
         if maxnbgames> nb_games:
-            state_tensor, winner_train, loss_decays = state_tensor[:nb_games], winner_train[:nb_games], loss_decays[:nb_games]
+            state_tensor, winner_train, loss_decays = state_tensor[:nb_games*50], winner_train[:nb_games*50], loss_decays[:nb_games*50]
         startpoint = maxnbgames
         print("Loaded saved training data")
     except Exception as e:
@@ -197,10 +190,11 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
     decay_train, decay_test = loss_decays[:train_cutoff], loss_decays[train_cutoff:]
     # print(x_test.shape, y_test.shape, decay_test.shape)
     # print(state_tensor.shape, winner_train.shape, loss_decays.shape)
+    # print(x_train.shape, y_train.shape, decay_train.shape)
 
     optimizer = torch.optim.AdamW(params= critic.parameters())
     critic.train()
-    vector_bce = lambda pred, target : target * -torch.log(pred) + (1-target) * torch.log(1-pred)
+    # vector_bce = lambda pred, target : target * -torch.log(pred) + (1-target) * torch.log(1-pred)
 
     train_losses, test_losses = [], []
     step_count = 0
@@ -215,31 +209,38 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
             x_batch = x_train[perm[i:ceiling]].to("cuda")
             y_batch = y_train[perm[i:ceiling]].to("cuda")
             loss_weights = decay_train[perm[i:ceiling]].to("cuda")
+            # print(y_batch, loss_weights)
+            # print(len(x_batch))
 
-            pred = critic(x_batch)
-            loss = torch.mean(vector_bce(pred, y_batch) * loss_weights)
+            pred = critic(x_batch).squeeze()
+            # loss = F.binary_cross_entropy(pred, y_batch)
+            loss = torch.mean(F.binary_cross_entropy(pred, y_batch, reduction="none") * loss_weights)
             train_losses.append(loss.item())
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             if step_count % save_period ==0:
-                torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
+                torch.save(critic.state_dict(), f"models/pretrained_critic_step_{step_count}.pth")
+                torch.save(optimizer.state_dict(), f"models/optimizer_step_{step_count}.pth")
 
             if step_count % eval_period == 0:
                 critic.eval()
-                pred = critic(x_test.to("cuda"))
-                loss = torch.mean(vector_bce(pred, y_test.to("cuda")) * decay_test.to("cuda"))
+                pred_test = critic(x_test.to("cuda")).squeeze()
+                loss = torch.mean(F.binary_cross_entropy(pred_test, y_test.to("cuda"), reduction="none") * decay_test.to("cuda"))
                 test_losses.append(loss.item())
                 critic.train()
 
-    torch.save(critic, f"models/pretrained_critic_step_{step_count}.pt")
+    torch.save(critic.state_dict(), f"models/pretrained_critic_step_{step_count}.pth")
+    torch.save(optimizer.state_dict(), f"models/optimizer_step_{step_count}.pth")
     try:
         plt.plot(train_losses)
         plt.plot(torch.arange(eval_period, step_count+1, eval_period), test_losses)
         plt.grid(True)
+        plt.show()
     except Exception as e:
         print(f'Error for the plot: {e}')
+        print(eval_period, step_count)
 
     return critic
 
@@ -260,9 +261,23 @@ def pretrain_critic(critic: Critic, nb_games:int, epochs:int, batch_size:int, te
 
 # exit()
 
-os.chdir(os.path.dirname(os.path.realpath(__file__)))
-pretrain_critic(critic, nb_games=10_000, epochs=10, batch_size=100, test_prop=0.01, eval_period=100, save_period=10000)
-# train_self_play(critic, high_actor, low_actor, 1_000)
+if __name__=="__main__":
+    os.chdir(os.path.dirname(os.path.realpath(__file__)))
+
+    base = Base_transformer(n_layers=3, latent_dim=128, num_heads=1)
+    base2 = Base_transformer(n_layers=3, latent_dim=128, num_heads=1)
+    critic = Critic(base).to("cuda")
+    high_actor = Actor(base2).to("cuda")
+    low_actor = Actor(base2).to("cuda")
+    critic.load_state_dict(torch.load("models/pretrained_critic_step_10000.pth", weights_only=True))
+
+    # critic = pretrain_critic(critic, nb_games=10_000, epochs=100, batch_size=1000, test_prop=0.01, eval_period=100, save_period=10000)
+    critic, high_actor, low_actor = train_self_play(critic, high_actor, low_actor, 1_000)
+    # print(critic.state_dict())
+    # critic = torch.load("models/pretrained_critic_step_10000.pt", weights_only=False)
+    # print(critic.state_dict())
+    print(critic(chessgame.create_classic_board().tensorboard.to("cuda").unsqueeze(0)))
+
 
 # TODO
 # Update after batch of games with random selection

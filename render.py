@@ -32,21 +32,25 @@ class Game:
         self.nb_pieces = np.sum(self.board.board != None)
         self.check = [False, False]
         self.gameover = False
-        self.PGN = ' '
+        self.PGN = ''
         self.move_history = np.empty((0, 2, 2), dtype=int)
         self.moved_pieces_history = []
         self.start_time = time.time()
         self.turn_counter = 0
         self.playing_color = 1
         self.current_PGN_index = 0
+        self.white_graveyard = []
+        self.black_graveyard = []
 
         os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
-    def _get_start_end_positions(self, item, piece_color, return_piece_name= False):
+    def _get_start_end_positions(self, item, piece_color, promotion=False, return_piece_name= False):
         end = [letter_indexes[item[-2]], 8-int(item[-1])]
         ispawn = item[0] != item[0].capitalize()
         piece_letter = item[0] if not ispawn else ""
-        fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=piece_color if piece_letter else 1-piece_color) # If pawn, set to black for it to be moving in the backwards direction
+        if promotion : ispawn, piece_letter = True, ""
+        # print("promotion :",promotion)
+        fakepiece = chessgame.Piece(end[0], end[1], name = piece_full_names[piece_letter], color=piece_color if piece_letter else 1-piece_color) # If pawn, set to opposite color for it to be moving in the backwards direction
         fakepiece.hasmoved = True
         possible_sources = self.board.get_piece_potential_moves(fakepiece, collide_mode=True)
         legal_sources = []
@@ -54,7 +58,10 @@ class Game:
             fakeboard = deepcopy(self.board)
             if not fakeboard.move(start, end): legal_sources.append(start)
         legal_sources= np.array(legal_sources)
-        if not len(legal_sources): raise ValueError(f"Error: invalid move at {'white' if piece_color else 'black'}\'s move. End \'{end}\' ")
+        if not len(legal_sources): 
+            print("Possible sources",possible_sources)
+            print("Fakepiece:",fakepiece)
+            raise ValueError(f"Error: invalid move at {'white' if piece_color else 'black'}\'s move. End \'{end}\' ")
         elif len(legal_sources)==1: start = legal_sources[0]
         else: # ambiguity
             if len(item) == 4 - ispawn:
@@ -72,17 +79,18 @@ class Game:
 
 
     def load_PGN(self, PGN_string:str, history_mode:bool = False):
-        # TODO promotions
         self.PGN = PGN_string
         self.board = chessgame.create_classic_board()
         self.move_history = np.empty((0, 2, 2), dtype=int)
         self.moved_pieces_history = []
+        self.white_graveyard = []
+        self.black_graveyard = []
         playing_side = 1
         current_turn = 1
 
         if history_mode : states = [self.board.tensorboard.clone()]
 
-        PGN_string = re.sub(r"[0-9]+\.(\.\.)? |\+|x|#|\?|!", "", PGN_string).strip()
+        PGN_string = re.sub(r"[0-9]+\.(\.\.)?( )?|\+|x|#|\?|!", "", PGN_string).strip()
 
         for item in PGN_string.split(" "):
             promotion= ''
@@ -94,19 +102,21 @@ class Game:
                 item = item[dotloc + 1 + 2*(1-playing_side):]
 
             if item.startswith('O-O'): # Castling
-                if item == 'O-O-O': 
-                    start, end = [4, playing_side*7], [2, playing_side*7]
-                    moved_piece = "Queenside Castle"
-                elif item == "O-O": 
-                    start, end = [4, playing_side*7], [6, playing_side*7]
-                    moved_piece = "Kingside Castle"
+                moved_piece = "king"
+                if item == 'O-O-O': start, end = [4, playing_side*7], [2, playing_side*7]
+                elif item == "O-O": start, end = [4, playing_side*7], [6, playing_side*7]
                 else : raise ValueError()
             elif item.find("-")>0: break
             else:
                 if item[-2]=="=" :
                     promotion = item[-1]
                     item=item[:-2]
-                start, end, moved_piece = self._get_start_end_positions(item, playing_side, return_piece_name=True)
+                
+                start, end, moved_piece = self._get_start_end_positions(item, playing_side, promotion=len(promotion)>0, return_piece_name=True)
+            if self.board.board[tuple(end)] is not None:
+                capture = f'{"white" if 1-playing_side else "black"}-{self.board.board[tuple(end)].name}'
+                if 1-playing_side : self.white_graveyard.append(capture)
+                else : self.black_graveyard.append(capture)
             illegal = self.board.move(start, end)
             if illegal: raise ValueError(f"Error: invalid move at {'white' if playing_side else 'black'}\'s move, turn {current_turn}. Instruction \'{item}\' ")
             self.move_history = np.vstack(( self.move_history, np.expand_dims([start, end], 0)))
@@ -123,6 +133,7 @@ class Game:
         print(f"Loaded PGN, turn {self.turn_counter}")
         self.current_PGN_index = len(self.PGN)
         self.playing_color = playing_side
+        self.nb_pieces = np.sum(self.board.board != None)
 
         if history_mode : return torch.stack(states)
 
@@ -171,6 +182,12 @@ class Game:
         mixer.init()
         mixer.Channel(1).set_volume(0.5)
 
+    def _display_text(self, text, font, coords, color=(255, 255, 255), anchor="center"):
+        text = font.render(text, True, color)
+        rect = text.get_rect()
+        setattr(rect, anchor, coords)
+        self.window.blit(text, rect)
+
     def _draw_grid(self):
         for i in range(0, 64, 1):
             y = (i//8) * square_size +corner_y
@@ -182,19 +199,13 @@ class Game:
         pygame.draw.rect(self.window, (255, 255, 255), [corner_x, corner_y, square_size*8, square_size*8], 1)
 
     def _dispay_coords(self):
-        texts = []
-        coords = []
         for i, letter in zip(range(8), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']):
-            texts.append(self.font.render(letter, True, (255, 255, 255)))
-            coords.append([corner_x + i*square_size + 35,  corner_y + square_size*8 + 35])
+            coords = [corner_x + i*square_size + 35,  corner_y + square_size*8 + 35]
+            self._display_text(letter, self.font, coords)
 
-            texts.append(self.font.render(str(i+1), True, (255, 255, 255)))
-            coords.append([corner_x //2, corner_y + (7-i)*square_size + 35])
-
-        for text, coord in zip(texts, coords):
-            textrect = text.get_rect()
-            textrect.center = (coord[0], coord[1])
-            self.window.blit(text, textrect)
+            coords = [corner_x //2, corner_y + (7-i)*square_size + 35]
+            self._display_text(str(i+1), self.font, coords)
+            
 
     def _display_pieces(self):
         for piece in self.board.board.ravel():
@@ -211,28 +222,48 @@ class Game:
         last_k_moves_list = []
         current_color = 1-self.playing_color
         for piece, move in zip(self.moved_pieces_history[max(0, len(self.move_history)-k):][::-1], self.move_history[max(0, len(self.move_history)-k):][::-1]):
-           last_k_moves_list.append(f'{"White" if current_color else "Black"} {piece} from {capital_letters[move[0,0]]}{8-move[0,1]} to {capital_letters[move[1,0]]}{8-move[1,1]}')
+           if piece == "king" and abs(move[0,0] - move[1,0])>1.5:
+                if move[0,0] - move[1,0] >= 0 : last_k_moves_list.append(f'{"White" if current_color else "Black"} Queenside Castle')
+                else : last_k_moves_list.append(f'{"White" if current_color else "Black"} Kingside Castle')
+               
+           else : last_k_moves_list.append(f'{"White" if current_color else "Black"} {piece} {capital_letters[move[0,0]]}{8-move[0,1]} to {capital_letters[move[1,0]]}{8-move[1,1]}')
            current_color = 1-current_color
         
-        display_text = self.font.render(f"Last {k} moves", True, (255, 255, 255))
-        rect = display_text.get_rect()
-        rect.topleft = (margin[0]+ 8*square_size+50, margin[1] + 350 - 35)
-        self.window.blit(display_text, rect)
+        self._display_text(f"Last {k} moves", self.font, coords=(margin[0]+ 8*square_size+50, margin[1] + 400 - 35), anchor="topleft")
 
-        pygame.draw.rect(self.window, (255, 255, 255), [margin[0]+ 8*square_size+50, margin[1] + 350, 260, 370], 1)
+        pygame.draw.rect(self.window, (255, 255, 255), [margin[0]+ 8*square_size+50, margin[1] + 400, 260, 310], 1)
         for i, text_move in enumerate(last_k_moves_list):
-            display_text = self.smallfont.render(text_move, True, (255, 255, 255))
-            rect = display_text.get_rect()
-            rect.topleft = (margin[0]+ 8*square_size+50 + 5, margin[1] + 350 + 5 + 30*i)
-            self.window.blit(display_text, rect)
-        
+            self._display_text(text_move, self.smallfont, coords=(margin[0]+ 8*square_size+50 + 5, margin[1] + 400 + 5 + 30*i), anchor='topleft')
 
-    def _display_board(self): # TODO change to board.show(), need to modify board class and pass the right arguments initialized in create_window()
-        self.window.fill(0)
+    def _display_graveyard(self):
+        self._display_text("White's Captures:", self.smallfont, coords=margin + np.array([8*square_size + 50, 250]), anchor="topleft")
+        for i,capture in enumerate(self.black_graveyard) :
+            image = self.piece_images[capture]
+            image = pygame.transform.scale_by(image, 1/2)
+            rect = image.get_rect()
+            rect.topleft = (margin[0] + 8*square_size + 50 + i*15, margin[1] + 250 + 20)
+            self.window.blit(image, rect)
+
+        self._display_text("Black's Captures:", self.smallfont, coords=margin + np.array([8*square_size + 50, 300]), anchor="topleft")
+        for i,capture in enumerate(self.white_graveyard) :
+            image = self.piece_images[capture]
+            image = pygame.transform.scale_by(image, 1/2)
+            rect = image.get_rect()
+            rect.topleft = (margin[0] + 8*square_size + 50 + i*15, margin[1] + 300 + 20)
+            self.window.blit(image, rect)
+        
+    def _display_prediction(self, white_win_proba:float):
+        self._display_text(f"AI Winner Prediction: {'White' if white_win_proba>=0.5 else 'Black'}, {(white_win_proba if white_win_proba>=0.5 else 1-white_win_proba):.0%}",
+                           self.smallfont, coords= margin + np.array([8*square_size + 50, 200]), anchor='topleft')
+
+    def _display_board(self, prediction:float = None): # TODO change to board.show(), need to modify board class and pass the right arguments initialized in create_window()
+        self.window.fill((10, 10, 100))
         self._draw_grid()
         self._display_pieces()
         self._dispay_coords()
         self._display_last_moves()
+        self._display_graveyard()
+        if prediction is not None : self._display_prediction(prediction)
         [button.show() for button in self.buttons]
         whoseturnisit = self.font.render(f"{'White' if self.playing_color else 'Black'}\'s move", True, (255,255,255))
         if not self.gameover: self.window.blit(whoseturnisit, self.turn_rect)
@@ -255,6 +286,10 @@ class Game:
         self.playing_color = 1
         self.turn_counter = 0
         self.selected_piece = None
+        self.white_graveyard=[]
+        self.black_graveyard=[]
+        self.move_history = np.empty((0, 2, 2), dtype=int)
+        self.moved_pieces_history = []
         mixer.Channel(1).play(pygame.mixer.Sound("Assets/Sounds/reset.mp3"))
 
     def _update_PGN(self, start, end, filepath:str=''):
@@ -265,8 +300,8 @@ class Game:
             self.PGN += f'{self.turn_counter}.'
         #ambiguity check
         if self.selected_piece.name=="king" and abs(end[0] - start[0])>1.5 : # Get castling out of the way as it is the only scenario where a move is not reversible
-            if end[0] > start[0]:self.PGN += 'O-O '
-            else : self.PGN +='O-O-O '
+            if end[0] > start[0]:self.PGN += 'O-O'
+            else : self.PGN +='O-O-O'
             castled = True
         else:
             self.PGN += self.selected_piece.PGN_letter
@@ -285,9 +320,14 @@ class Game:
                     self.PGN += str(8-start[1])
                 else:
                     self.PGN += f"{letters[start[0]]}{8-start[1]}"
+        
         if np.sum(self.board.board != None) < self.nb_pieces: self.PGN += 'x'# If there has been a capture
-        if not castled: self.PGN += f"{letters[end[0]]}{8-end[1]} "
+        if not castled: self.PGN += f"{letters[end[0]]}{8-end[1]}"
+        #Promotion check
+        if self.previous_board.board[tuple(start)].name != self.selected_piece.name : self.PGN +="="+self.selected_piece.PGN_letter
         if self.gameover and not self.PGN.endswith('#') : self.PGN[-1] = '#'
+        self.PGN += " "
+
         self._save_PGN(filepath)
         self.current_PGN_index = len(self.PGN)
 
@@ -321,19 +361,18 @@ class Game:
     
     def play_human_human_game(self, critic=None):
         self._create_window()
-
         running=True
         self.selected_piece = None
-
-        self._display_board()
-
+        pred = None
+        if critic : pred = critic(self.board.tensorboard.unsqueeze(0).to("cuda")).item()
+        self._display_board(pred)
         self.gameover = False
         while running:
             for event in pygame.event.get():
                 if self.gameover:
                     if np.isclose(self.winner, 0.5) : self.PGN += f' ½-½'
                     else : self.PGN = self.PGN[:-1] + '#' + f' {0 if self.playing_color else 1}-{1 if self.playing_color else 0}'
-                    self._display_board()
+                    self._display_board(pred)
                     if event.type == pygame.QUIT:
                         running=False
                         break
@@ -357,17 +396,20 @@ class Game:
                             if illegal_flag:
                                 self.selected_piece = None
                                 if illegal_flag==2: print("Suicide move, illegal")
+                                self._display_board(pred)
                                 continue
-                            else : self.playing_color = 1-self.playing_color
+                            else : 
+                                self.playing_color = 1-self.playing_color
+                                print(f'{str(self.selected_piece).replace("at", "to")} from {letters[previous_coords[0]]}{8-previous_coords[1]}')
+                                self.move_history = np.vstack(( self.move_history, np.expand_dims([previous_coords, board_coords], 0)))
+                                self.moved_pieces_history.append(self.selected_piece.name)
                         except Exception as e:
                             print(f"Error : {e}")
                             self.selected_piece = None
+                            self._display_board(pred)
                             continue
-                        finally:
-                            self._display_board()
                         
-                        print(f'{str(self.selected_piece).replace("at", "to")} from {letters[previous_coords[0]]}{8-previous_coords[1]}')
-
+                        if critic : pred = critic(self.board.tensorboard.unsqueeze(0).to("cuda")).item()
                         self.winner = self._check_game_end()
 
                         #PGN update
@@ -375,13 +417,17 @@ class Game:
                         if np.sum(self.board.board != None) < self.nb_pieces: # If there has been a capture
                             self.nb_pieces -= 1
                             mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/capture.mp3"))
+                            capture = f'{"white" if self.playing_color else "black"}-{self.previous_board.board[tuple(board_coords)].name}'
+                            if self.playing_color : self.white_graveyard.append(capture)
+                            else : self.black_graveyard.append(capture)
                         else: mixer.Channel(0).play(pygame.mixer.Sound("Assets/Sounds/move.mp3"))
+                        self._display_board(pred)
 
                         #Turn change
                         self.selected_piece = None
                     
                     else:# If we just picked up a piece
-                        self._display_board()
+                        self._display_board(pred)
                         #convert x y coords in board coords
                         try: self.selected_piece = self.board.board[board_coords[0], board_coords[1]]
                         except Exception: continue
@@ -502,8 +548,9 @@ class Button:
         self.game.window.blit(self.text, self.textrect)
 
     def trigger_if_pressed(self, coords):
-        if np.all(coords >= self.coords) and np.all(coords <= self.coords + self.size): 
-            self.function(*self.args)
+        if np.all(coords >= self.coords) and np.all(coords <= self.coords + self.size):
+            if not self.args : self.function()
+            else : self.function(*self.args)
             self.game.selected_piece = None
 
 
